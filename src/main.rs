@@ -1,7 +1,7 @@
 use clap::{ArgGroup, Parser};
 use log::{debug, info};
 use regex::Regex;
-use smelt::{find_attachments, find_markdown_files_with_tag, print_files, rsync_files};
+use matterof::{find_attachments, find_markdown_files_with_tag, print_files, rsync_files};
 use std::path::PathBuf;
 use walkdir::DirEntry;
 
