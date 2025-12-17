@@ -71,7 +71,7 @@ fn contains_tag(
 
 /// find_markdown_files walks the given directory and returns
 /// an iter of all markdown files.
-fn find_markdown_files(dir: &Path) -> impl Iterator<Item = DirEntry> {
+fn find_markdown_files(dir: &Path) -> impl Iterator<Item = DirEntry> + use<> {
     walkdir_iter(dir).into_iter().filter(is_markdown)
 }
 
@@ -219,7 +219,7 @@ fn dir_path_with_tail_slash(dir: &Path) -> String {
 
 /// walkdir_iter is a wrapper of walkdir::WalkDir::new(dir).into_iter().
 /// It filters out any error, log and ignore it.
-fn walkdir_iter(dir: &Path) -> impl Iterator<Item = DirEntry> {
+fn walkdir_iter(dir: &Path) -> impl Iterator<Item = DirEntry> + use<> {
     WalkDir::new(dir).into_iter().filter_map(|e| match e {
         Ok(e) => Some(e),
         Err(e) => {
@@ -262,7 +262,8 @@ mod tests {
     fn setup() -> () {
         INIT.call_once(|| {
             if let Err(_) = env::var("RUST_LOG") {
-                env::set_var("RUST_LOG", "debug");
+                // TODO: Audit that the environment access only happens in single-threaded code.
+                unsafe { env::set_var("RUST_LOG", "debug") };
             }
 
             let _ = env_logger::builder().is_test(true).try_init();
