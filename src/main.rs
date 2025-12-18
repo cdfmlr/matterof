@@ -4,6 +4,7 @@ use regex::Regex;
 use matterof::{find_attachments, find_markdown_files_with_kv, print_files, rsync_files};
 use std::path::PathBuf;
 use walkdir::DirEntry;
+use anyhow::Result;
 
 // clap reference (example):
 // - derive ArgGroup: https://github.com/clap-rs/clap/blob/v3.1.14/examples/tutorial_derive/README.md#argument-relations
@@ -42,7 +43,7 @@ struct Cli {
     src: PathBuf,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     env_logger::init();
 
     let cli = &Cli::parse();
@@ -65,7 +66,7 @@ fn main() -> anyhow::Result<()> {
     let attachment_dir_re = Regex::new(attachment_dir_re_str)?;
 
     let attachment_files = find_attachments(&cli.src, &attachment_dir_re);
-    let files = files.chain(attachment_files);
+    let files = files.chain(attachment_files.map(Ok));
     info!(
         "built filter for attachments with directory name matching [{}]",
         attachment_dir_re_str
@@ -83,7 +84,7 @@ enum Action<'a> {
 }
 
 impl<'a> Action<'a> {
-    fn from_cli(cli: &'a Cli) -> anyhow::Result<Self> {
+    fn from_cli(cli: &'a Cli) -> Result<Self> {
         if cli.print {
             return Ok(Self::Print);
         }
@@ -98,13 +99,13 @@ impl<'a> Action<'a> {
         return Err(anyhow::anyhow!("no action specified"));
     }
 
-    fn execute(&self, files: impl Iterator<Item = DirEntry>) -> anyhow::Result<()> {
+    fn execute(&self, files: impl Iterator<Item = Result<DirEntry>>) -> Result<()> {
         return match self {
             Self::Print => {
-                print_files(files);
-                Ok(())
+                print_files(files)
             }
-            Self::RsyncTo { src_dir, dst_dir } => rsync_files(&src_dir, files, &dst_dir)
+            Self::RsyncTo { src_dir, dst_dir } =>
+                rsync_files(&src_dir, files, &dst_dir)
                 .map_err(|e| anyhow::anyhow!("rsync error: {}", e)),
         };
     }

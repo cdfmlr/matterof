@@ -3,9 +3,11 @@ use gray_matter::Matter;
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use regex::Regex;
+use thiserror::Error;
+use anyhow::{Context, Result};
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
 /// is_markdown checks if the given DirEntry is a markdown file.
@@ -25,13 +27,26 @@ fn is_markdown(entry: &DirEntry) -> bool {
 /// markdown files, and extract the YAML front matters.
 static MATTER: Lazy<Matter<YAML>> = Lazy::new(|| Matter::<YAML>::new());
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum CheckMarkdownFrontMatterError {
-    WalkDirIterError(walkdir::Error),
-    ReadFileError(std::io::Error),
-    AsHashmapError(gray_matter::Error),
+    #[error("walkdir error: {0}")]
+    WalkDirIterError(#[from] walkdir::Error),
+    #[error("failed to read {path}: {source}")]
+    ReadFileError {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse front matter as map: {0}")]
+    AsHashmapError(#[source] gray_matter::Error),
+    #[error("front matter missing")]
     RefDataNone,
-    AsStringError(gray_matter::Error),
+    #[error("failed to extract key `{key}` as string: {source}")]
+    AsStringError {
+        key: String,
+        #[source]
+        source: gray_matter::Error,
+    },
 }
 
 use CheckMarkdownFrontMatterError::*;
@@ -42,28 +57,30 @@ fn contains_kv(
     markdown_file: &Path,
     key: &str,
     value: &Regex,
-) -> Result<bool, CheckMarkdownFrontMatterError> {
-    let content = fs::read_to_string(markdown_file).or_else(|err| Err(ReadFileError(err)))?;
-    let result = MATTER.parse(content.trim());
-    if result.data.is_none() {
+) -> Result<bool> {
+    let content = fs::read_to_string(markdown_file)
+        .map_err(|source| ReadFileError {
+            path: markdown_file.to_path_buf(),
+            source,
+        })
+        .with_context(|| format!("reading {}", markdown_file.display()))?;
+
+    let parsed = MATTER.parse(content.trim());
+    let Some(data) = parsed.data.as_ref() else { return Ok(false) };
+    let map = data
+        .as_hashmap()
+        .map_err(AsHashmapError)
+        .with_context(|| format!("parsing front matter in {}", markdown_file.display()))?;
+
+    let Some(raw) = map.get(key) else { return Ok(false) };
+    let Ok(got_value) = raw.as_string() else {
+        warn!(
+            "skipping {}: key `{}` is not a string",
+            markdown_file.display(),
+            key
+        );
         return Ok(false);
-    }
-
-    let data = result.data.as_ref().ok_or(RefDataNone)?;
-
-    // let got_value = data[key].as_string()?;
-    // data[key] panic if no entry found for key
-    let data = data.as_hashmap().or_else(|err| Err(AsHashmapError(err)))?;
-    let got_value = data.get(key);
-
-    if let None = got_value {
-        return Ok(false);
-    }
-
-    let got_value = got_value
-        .unwrap()
-        .as_string()
-        .or_else(|err| Err(AsStringError(err)))?;
+    };
 
     Ok(value.is_match(&got_value))
 }
@@ -81,26 +98,24 @@ pub fn find_markdown_files_with_kv<'a, P: AsRef<Path>>(
     dir: P,
     key: &'a str,
     value: &'a Regex,
-) -> impl Iterator<Item = DirEntry> + 'a {
-    // but why 'a is needed here?
+) -> impl Iterator<Item = Result<DirEntry>> + 'a {
     let dir = dir.as_ref();
-    find_markdown_files(dir).filter(|e| {
-        contains_kv(e.path(), key, value).unwrap_or_else(|err| {
-            warn!(
-                "failed to check YAML front matter from {:?}: err = {:?}",
-                e.path(),
-                err
-            );
-            false
-        })
+
+    find_markdown_files(dir).filter_map(move |entry| {
+        let path = entry.path().to_path_buf();
+        contains_kv(path.as_path(), key, value)
+            .map(|matched| matched.then_some(entry))
+            .with_context(|| format!("checking {}", path.display()))
+            .transpose()
     })
 }
 
 /// print_files prints the path of each file in the given iter.
-pub fn print_files(files: impl Iterator<Item = DirEntry>) {
+pub fn print_files(files: impl Iterator<Item = Result<DirEntry>>) -> Result<()> {
     for file in files {
-        println!("{}", file.path().to_str().unwrap());
+        println!("{}", file?.path().to_str().unwrap());
     }
+    Ok(())
 }
 
 // #[derive(Error, Debug)]
@@ -126,7 +141,7 @@ pub fn print_files(files: impl Iterator<Item = DirEntry>) {
 /// - make sure only src_files are synced to the dst.
 pub fn rsync_files(
     src_base_dir: impl AsRef<Path>,
-    src_files: impl Iterator<Item = DirEntry>,
+    src_files: impl Iterator<Item = Result<DirEntry>>,
     dst: impl AsRef<Path>,
 ) -> anyhow::Result<()> {
     let src_base_dir = src_base_dir.as_ref();
@@ -150,6 +165,7 @@ pub fn rsync_files(
 
     let mut cnt = 0;
     for file in src_files {
+        let file = file?;
         let s = file.path();
         let d = &tmp_dir.join(s.strip_prefix(src_base_dir)?);
         let d_parent_dir = d.parent().unwrap();
@@ -353,9 +369,13 @@ mod tests {
         setup();
 
         let dir = Path::new("test_resc");
-        let files: Vec<_> =
-            find_markdown_files_with_kv(&dir, "publish_to", &Regex::new("hello-world").unwrap())
-                .collect();
+        let files: Vec<_> = find_markdown_files_with_kv(
+            &dir,
+            "publish_to",
+            &Regex::new("hello-world").unwrap(),
+        )
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
 
         assert_eq!(files.len(), 1);
         assert!(files.iter().any(|e| e.path().ends_with("has_yaml.md")));
@@ -374,10 +394,6 @@ mod tests {
         let value_re = Regex::new("expect copy").unwrap();
         let files = find_markdown_files_with_kv(&src_dir, "rsync_test", &value_re);
 
-        let files: Vec<_> = files.collect();
-        debug!("src files: {:?}", files);
-
-        let files = files.into_iter();
         let result = rsync_files(&src_dir, files, &dst_dir);
         assert!(result.is_ok());
 
