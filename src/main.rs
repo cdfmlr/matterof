@@ -1,7 +1,7 @@
 use clap::{ArgGroup, Parser};
 use log::{debug, info};
 use regex::Regex;
-use matterof::{find_attachments, find_markdown_files_with_tag, print_files, rsync_files};
+use matterof::{find_attachments, find_markdown_files_with_kv, print_files, rsync_files};
 use std::path::PathBuf;
 use walkdir::DirEntry;
 
@@ -51,7 +51,7 @@ fn main() -> anyhow::Result<()> {
     let value_re_str = &cli.value;
     let value_re = Regex::new(value_re_str)?;
 
-    let files = find_markdown_files_with_tag(&cli.src, &cli.key, &value_re);
+    let files = find_markdown_files_with_kv(&cli.src, &cli.key, &value_re);
     info!(
         "built filter for markdown files with front matter [{}: {}]",
         cli.key, value_re_str

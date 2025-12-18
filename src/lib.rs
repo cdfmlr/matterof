@@ -24,7 +24,6 @@ fn is_markdown(entry: &DirEntry) -> bool {
 /// MATTER is a singleton that can be used to parse
 /// markdown files, and extract the YAML front matters.
 static MATTER: Lazy<Matter<YAML>> = Lazy::new(|| Matter::<YAML>::new());
-// 真逆天啊，编译器提示用第三方库。。
 
 #[derive(Debug)]
 pub enum CheckMarkdownFrontMatterError {
@@ -37,9 +36,9 @@ pub enum CheckMarkdownFrontMatterError {
 
 use CheckMarkdownFrontMatterError::*;
 
-/// contains_tag checks if the given markdown file contains
+/// contains_kv checks if the given markdown file contains
 /// the given key/value pair in its YAML front matter.
-fn contains_tag(
+fn contains_kv(
     markdown_file: &Path,
     key: &str,
     value: &Regex,
@@ -75,10 +74,10 @@ fn find_markdown_files(dir: &Path) -> impl Iterator<Item = DirEntry> + use<> {
     walkdir_iter(dir).into_iter().filter(is_markdown)
 }
 
-/// find_markdown_files_with_tag walks the given directory and returns
+/// find_markdown_files_with_kv walks the given directory and returns
 /// an iter of all markdown files that contain the given key/value pair
 /// in their YAML front matter.
-pub fn find_markdown_files_with_tag<'a, P: AsRef<Path>>(
+pub fn find_markdown_files_with_kv<'a, P: AsRef<Path>>(
     dir: P,
     key: &'a str,
     value: &'a Regex,
@@ -86,7 +85,7 @@ pub fn find_markdown_files_with_tag<'a, P: AsRef<Path>>(
     // but why 'a is needed here?
     let dir = dir.as_ref();
     find_markdown_files(dir).filter(|e| {
-        contains_tag(e.path(), key, value).unwrap_or_else(|err| {
+        contains_kv(e.path(), key, value).unwrap_or_else(|err| {
             warn!(
                 "failed to check YAML front matter from {:?}: err = {:?}",
                 e.path(),
@@ -314,20 +313,20 @@ mod tests {
         let file_wo_yaml = dir.join("missing_yaml.md");
         let file_not_exist = dir.join("not_exist.md");
 
-        assert!(contains_tag(
+        assert!(contains_kv(
             &file_with_yaml,
             "publish_to",
             &Regex::new("hello-world").unwrap()
         )
         .unwrap());
-        assert!(!contains_tag(
+        assert!(!contains_kv(
             &file_wo_yaml,
             "publish_to",
             &Regex::new("hello-world").unwrap()
         )
         .unwrap());
 
-        assert!(contains_tag(&file_not_exist, "tags", &Regex::new("rust").unwrap()).is_err());
+        assert!(contains_kv(&file_not_exist, "tags", &Regex::new("rust").unwrap()).is_err());
     }
 
     #[test]
@@ -355,7 +354,7 @@ mod tests {
 
         let dir = Path::new("test_resc");
         let files: Vec<_> =
-            find_markdown_files_with_tag(&dir, "publish_to", &Regex::new("hello-world").unwrap())
+            find_markdown_files_with_kv(&dir, "publish_to", &Regex::new("hello-world").unwrap())
                 .collect();
 
         assert_eq!(files.len(), 1);
@@ -373,7 +372,7 @@ mod tests {
         debug!("dst_dir: {:?}", dst_dir);
 
         let value_re = Regex::new("expect copy").unwrap();
-        let files = find_markdown_files_with_tag(&src_dir, "rsync_test", &value_re);
+        let files = find_markdown_files_with_kv(&src_dir, "rsync_test", &value_re);
 
         let files: Vec<_> = files.collect();
         debug!("src files: {:?}", files);
