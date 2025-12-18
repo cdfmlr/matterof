@@ -88,22 +88,20 @@ fn contains_kv(
 /// find_markdown_files walks the given directory and returns
 /// an iter of all markdown files.
 fn find_markdown_files(dir: &Path) -> impl Iterator<Item = DirEntry> + use<> {
-    walkdir_iter(dir).into_iter().filter(is_markdown)
+    walkdir_iter(dir).filter(is_markdown)
 }
 
 /// find_markdown_files_with_kv walks the given directory and returns
 /// an iter of all markdown files that contain the given key/value pair
 /// in their YAML front matter.
-pub fn find_markdown_files_with_kv<'a, P: AsRef<Path>>(
-    dir: P,
+pub fn find_markdown_files_with_kv<'a>(
+    dir: &'a Path,
     key: &'a str,
     value: &'a Regex,
 ) -> impl Iterator<Item = Result<DirEntry>> + 'a {
-    let dir = dir.as_ref();
-
     find_markdown_files(dir).filter_map(move |entry| {
         let path = entry.path().to_path_buf();
-        contains_kv(path.as_path(), key, value)
+        contains_kv(&path, key, value)
             .map(|matched| matched.then_some(entry))
             .with_context(|| format!("checking {}", path.display()))
             .transpose()
@@ -113,7 +111,7 @@ pub fn find_markdown_files_with_kv<'a, P: AsRef<Path>>(
 /// print_files prints the path of each file in the given iter.
 pub fn print_files(files: impl Iterator<Item = Result<DirEntry>>) -> Result<()> {
     for file in files {
-        println!("{}", file?.path().to_str().unwrap());
+        println!("{}", file?.path().display());
     }
     Ok(())
 }
@@ -140,12 +138,10 @@ pub fn print_files(files: impl Iterator<Item = Result<DirEntry>>) -> Result<()> 
 /// - keep them in the same directory structure as the src_base_dir;
 /// - make sure only src_files are synced to the dst.
 pub fn rsync_files(
-    src_base_dir: impl AsRef<Path>,
+    src_base_dir: &Path,
     src_files: impl Iterator<Item = Result<DirEntry>>,
-    dst: impl AsRef<Path>,
+    dst: &Path,
 ) -> anyhow::Result<()> {
-    let src_base_dir = src_base_dir.as_ref();
-    let dst = dst.as_ref();
 
     info!(
         "rsync filtered files from {} to {}",
@@ -214,6 +210,13 @@ pub fn rsync_files(
     Ok(())
 }
 
+/// path_to_string safely converts a Path to String
+fn path_to_string(path: &Path) -> String {
+    path.to_str()
+        .unwrap_or("")
+        .to_owned()
+}
+
 /// dir_path_with_tail_slash converts a Path to a String,
 /// and append a tailing slash to the String if it doesn't have one.
 ///
@@ -221,8 +224,7 @@ pub fn rsync_files(
 /// // assert!(dir_path_with_tail_slash(Path::new("path/to/hello")) == "path/to/hello/");
 /// ```
 fn dir_path_with_tail_slash(dir: &Path) -> String {
-    let mut dir = dir.to_str().unwrap().to_owned();
-
+    let mut dir = path_to_string(dir);
     let slash = if cfg!(windows) { "\\" } else { "/" };
 
     if !dir.ends_with(slash) {
@@ -246,10 +248,10 @@ fn walkdir_iter(dir: &Path) -> impl Iterator<Item = DirEntry> + use<> {
 }
 
 pub fn find_attachments<'a>(
-    dir: impl AsRef<Path> + 'a,
+    dir: &'a Path,
     attachment_dir_re: &'a Regex,
 ) -> impl Iterator<Item = DirEntry> + 'a {
-    walkdir_iter(dir.as_ref())
+    walkdir_iter(dir)
         .filter(|e| e.file_type().is_file() && is_attachment(attachment_dir_re, e))
 }
 
