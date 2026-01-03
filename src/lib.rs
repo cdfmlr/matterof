@@ -1,10 +1,10 @@
-use gray_matter::engine::YAML;
+use anyhow::{Context, Result};
 use gray_matter::Matter;
+use gray_matter::engine::YAML;
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use thiserror::Error;
-use anyhow::{Context, Result};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,18 +29,22 @@ static MATTER: Lazy<Matter<YAML>> = Lazy::new(|| Matter::<YAML>::new());
 
 #[derive(Debug, Error)]
 pub enum CheckMarkdownFrontMatterError {
-    #[error("walkdir error: {0}")]
+    #[error("failed to walk dir: {0}")]
     WalkDirIterError(#[from] walkdir::Error),
+
     #[error("failed to read {path}: {source}")]
     ReadFileError {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
-    #[error("failed to parse front matter as map: {0}")]
+
+    #[error("failed to parse front matter as a map: {0}")]
     AsHashmapError(#[source] gray_matter::Error),
+
     #[error("front matter missing")]
     RefDataNone,
+
     #[error("failed to extract key `{key}` as string: {source}")]
     AsStringError {
         key: String,
@@ -53,11 +57,7 @@ use CheckMarkdownFrontMatterError::*;
 
 /// contains_kv checks if the given markdown file contains
 /// the given key/value pair in its YAML front matter.
-fn contains_kv(
-    markdown_file: &Path,
-    key: &str,
-    value: &Regex,
-) -> Result<bool> {
+fn contains_kv(markdown_file: &Path, key: &str, value: &Regex) -> Result<bool> {
     let content = fs::read_to_string(markdown_file)
         .map_err(|source| ReadFileError {
             path: markdown_file.to_path_buf(),
@@ -66,13 +66,17 @@ fn contains_kv(
         .with_context(|| format!("reading {}", markdown_file.display()))?;
 
     let parsed = MATTER.parse(content.trim());
-    let Some(data) = parsed.data.as_ref() else { return Ok(false) };
+    let Some(data) = parsed.data.as_ref() else {
+        return Ok(false);
+    };
     let map = data
         .as_hashmap()
         .map_err(AsHashmapError)
         .with_context(|| format!("parsing front matter in {}", markdown_file.display()))?;
 
-    let Some(raw) = map.get(key) else { return Ok(false) };
+    let Some(raw) = map.get(key) else {
+        return Ok(false);
+    };
     let Ok(got_value) = raw.as_string() else {
         warn!(
             "skipping {}: key `{}` is not a string",
@@ -142,7 +146,6 @@ pub fn rsync_files(
     src_files: impl Iterator<Item = Result<DirEntry>>,
     dst: &Path,
 ) -> anyhow::Result<()> {
-
     info!(
         "rsync filtered files from {} to {}",
         src_base_dir.display(),
@@ -212,9 +215,7 @@ pub fn rsync_files(
 
 /// path_to_string safely converts a Path to String
 fn path_to_string(path: &Path) -> String {
-    path.to_str()
-        .unwrap_or("")
-        .to_owned()
+    path.to_str().unwrap_or("").to_owned()
 }
 
 /// dir_path_with_tail_slash converts a Path to a String,
@@ -251,8 +252,7 @@ pub fn find_attachments<'a>(
     dir: &'a Path,
     attachment_dir_re: &'a Regex,
 ) -> impl Iterator<Item = DirEntry> + 'a {
-    walkdir_iter(dir)
-        .filter(|e| e.file_type().is_file() && is_attachment(attachment_dir_re, e))
+    walkdir_iter(dir).filter(|e| e.file_type().is_file() && is_attachment(attachment_dir_re, e))
 }
 
 /// is_attachment check all ancestors of the file
@@ -306,9 +306,11 @@ mod tests {
 
         assert_eq!(markdowns.len(), 5);
 
-        assert!(markdowns
-            .iter()
-            .all(|e| e.file_name().to_str().unwrap().ends_with(".md")));
+        assert!(
+            markdowns
+                .iter()
+                .all(|e| e.file_name().to_str().unwrap().ends_with(".md"))
+        );
 
         let file_names = markdowns
             .iter()
@@ -331,18 +333,22 @@ mod tests {
         let file_wo_yaml = dir.join("missing_yaml.md");
         let file_not_exist = dir.join("not_exist.md");
 
-        assert!(contains_kv(
-            &file_with_yaml,
-            "publish_to",
-            &Regex::new("hello-world").unwrap()
-        )
-        .unwrap());
-        assert!(!contains_kv(
-            &file_wo_yaml,
-            "publish_to",
-            &Regex::new("hello-world").unwrap()
-        )
-        .unwrap());
+        assert!(
+            contains_kv(
+                &file_with_yaml,
+                "publish_to",
+                &Regex::new("hello-world").unwrap()
+            )
+            .unwrap()
+        );
+        assert!(
+            !contains_kv(
+                &file_wo_yaml,
+                "publish_to",
+                &Regex::new("hello-world").unwrap()
+            )
+            .unwrap()
+        );
 
         assert!(contains_kv(&file_not_exist, "tags", &Regex::new("rust").unwrap()).is_err());
     }
@@ -357,12 +363,16 @@ mod tests {
         assert_eq!(files.len(), 5);
         assert!(files.iter().any(|e| e.path().ends_with("has_yaml.md")));
         assert!(files.iter().any(|e| e.path().ends_with("missing_yaml.md")));
-        assert!(files
-            .iter()
-            .any(|e| e.path().ends_with("sub_dir/missing_key.md")));
-        assert!(files
-            .iter()
-            .any(|e| e.path().ends_with("sub_dir/bad_value_type.md")));
+        assert!(
+            files
+                .iter()
+                .any(|e| e.path().ends_with("sub_dir/missing_key.md"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|e| e.path().ends_with("sub_dir/bad_value_type.md"))
+        );
         assert!(files.iter().any(|e| e.path().ends_with("atta.md")));
     }
 
@@ -371,13 +381,10 @@ mod tests {
         setup();
 
         let dir = Path::new("test_resc");
-        let files: Vec<_> = find_markdown_files_with_kv(
-            &dir,
-            "publish_to",
-            &Regex::new("hello-world").unwrap(),
-        )
-        .collect::<Result<Vec<_>>>()
-        .unwrap();
+        let files: Vec<_> =
+            find_markdown_files_with_kv(&dir, "publish_to", &Regex::new("hello-world").unwrap())
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
 
         assert_eq!(files.len(), 1);
         assert!(files.iter().any(|e| e.path().ends_with("has_yaml.md")));
@@ -432,14 +439,18 @@ mod tests {
         let files: Vec<_> = find_attachments(&dir, &attachment_dir_re).collect();
 
         assert_eq!(files.len(), 3);
-        assert!(files.iter().any(|e| e
-            .path()
-            .ends_with("test_resc/attachment/atta_sub_dir/atta.md")));
-        assert!(files
-            .iter()
-            .any(|e| e.path().ends_with("test_resc/attachment/atta_root.txt")));
-        assert!(files.iter().any(|e| e
-            .path()
-            .ends_with("test_resc/sub_dir/attachment/atta_sub.txt")));
+        assert!(files.iter().any(|e| {
+            e.path()
+                .ends_with("test_resc/attachment/atta_sub_dir/atta.md")
+        }));
+        assert!(
+            files
+                .iter()
+                .any(|e| e.path().ends_with("test_resc/attachment/atta_root.txt"))
+        );
+        assert!(files.iter().any(|e| {
+            e.path()
+                .ends_with("test_resc/sub_dir/attachment/atta_sub.txt")
+        }));
     }
 }

@@ -1,10 +1,10 @@
+use anyhow::Result;
 use clap::{ArgGroup, Parser};
 use log::{debug, info};
-use regex::Regex;
 use matterof::{find_attachments, find_markdown_files_with_kv, print_files, rsync_files};
+use regex::Regex;
 use std::path::PathBuf;
 use walkdir::DirEntry;
-use anyhow::Result;
 
 // clap reference (example):
 // - derive ArgGroup: https://github.com/clap-rs/clap/blob/v3.1.14/examples/tutorial_derive/README.md#argument-relations
@@ -101,11 +101,8 @@ impl<'a> Action<'a> {
 
     fn execute(&self, files: impl Iterator<Item = Result<DirEntry>>) -> Result<()> {
         return match self {
-            Self::Print => {
-                print_files(files)
-            }
-            Self::RsyncTo { src_dir, dst_dir } =>
-                rsync_files(&src_dir, files, &dst_dir)
+            Self::Print => print_files(files),
+            Self::RsyncTo { src_dir, dst_dir } => rsync_files(&src_dir, files, &dst_dir)
                 .map_err(|e| anyhow::anyhow!("rsync error: {}", e)),
         };
     }
