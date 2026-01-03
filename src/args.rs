@@ -23,7 +23,7 @@ pub enum Commands {
     Fmt(FmtArgs),
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default, Clone)]
 pub struct CommonOpts {
     /// Preview changes without modifying files
     #[arg(long)]

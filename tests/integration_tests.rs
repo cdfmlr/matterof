@@ -1,4 +1,4 @@
-use matterof::*;
+use matterof::io::is_markdown;
 use std::fs;
 use tempfile::TempDir;
 use walkdir::WalkDir;
