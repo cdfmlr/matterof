@@ -46,7 +46,8 @@ pub fn read_front_matter(path: &Path) -> Result<(Option<serde_yaml::Value>, Stri
             .with_context(|| format!("failed to deserialize front matter from {}", path.display()))?;
         Some(val)
     } else {
-        None
+        // If we had delimiters, treating as empty FM
+        Some(serde_yaml::Value::Null)
     };
 
     Ok((data, parsed.content))
@@ -260,27 +261,152 @@ pub fn write_result(file: &PathBuf, fm: Option<&serde_yaml::Value>, content: &st
          fs::write(file, new_content)?;
     }
 
-    Ok(())
-}
+        Ok(())
 
-pub fn show_diff(path: &Path, new_content: &str) -> Result<()> {
-    let mut tmp = tempfile::NamedTempFile::new()?;
-    write!(tmp, "{}", new_content)?;
-    
-    let output = std::process::Command::new("diff")
-        .arg("-u")
-        .arg(path)
-        .arg(tmp.path())
-        .output();
-
-    match output {
-        Ok(o) => {
-            std::io::stdout().write_all(&o.stdout)?;
-        },
-        Err(_) => {
-            println!("(diff command failed, showing new content)");
-            println!("{}", new_content);
-        }
     }
-    Ok(())
-}
+
+    
+
+    pub fn show_diff(path: &Path, new_content: &str) -> Result<()> {
+
+        let mut tmp = tempfile::NamedTempFile::new()?;
+
+        write!(tmp, "{}", new_content)?;
+
+        
+
+        let output = std::process::Command::new("diff")
+
+            .arg("-u")
+
+            .arg(path)
+
+            .arg(tmp.path())
+
+            .output();
+
+    
+
+        match output {
+
+            Ok(o) => {
+
+                std::io::stdout().write_all(&o.stdout)?;
+
+            },
+
+            Err(_) => {
+
+                println!("(diff command failed, showing new content)");
+
+                println!("{}", new_content);
+
+            }
+
+        }
+
+        Ok(())
+
+    }
+
+    
+
+    #[cfg(test)]
+
+    mod tests {
+
+        use super::*;
+
+        use serde_yaml::Value;
+
+    
+
+        #[test]
+
+        fn test_parse_key_path() {
+
+            assert_eq!(parse_key_path("foo"), vec!["foo"]);
+
+            assert_eq!(parse_key_path("foo.bar"), vec!["foo", "bar"]);
+
+            assert_eq!(parse_key_path("foo.\"bar.baz\""), vec!["foo", "bar.baz"]);
+
+            assert_eq!(parse_key_path("foo.'bar.baz'"), vec!["foo", "bar.baz"]);
+
+            assert_eq!(parse_key_path("foo[0]"), vec!["foo", "0"]);
+
+            assert_eq!(parse_key_path("foo.[0]"), vec!["foo", "0"]);
+
+        }
+
+    
+
+        #[test]
+
+        fn test_flatten_unflatten_yaml() {
+
+            let yaml = r#"
+
+            foo: bar
+
+            nested:
+
+              a: 1
+
+              b: 2
+
+            list:
+
+              - x
+
+              - y
+
+            "#;
+
+            let val: Value = serde_yaml::from_str(yaml).unwrap();
+
+            let flattened = flatten_yaml(&val);
+
+            let unflattened = unflatten_yaml(flattened);
+
+            
+
+            assert_eq!(val, unflattened);
+
+        }
+
+    
+
+        #[test]
+
+        fn test_insert_at_path() {
+
+            let mut root = Value::Mapping(serde_yaml::Mapping::new());
+
+            insert_at_path(&mut root, &["a".to_string(), "b".to_string()], Value::from(1));
+
+            
+
+            let yaml = serde_yaml::to_string(&root).unwrap();
+
+            assert!(yaml.contains("a:"));
+
+            assert!(yaml.contains("b: 1"));
+
+    
+
+            // Merge
+
+            insert_at_path(&mut root, &["a".to_string(), "c".to_string()], Value::from(2));
+
+             let yaml = serde_yaml::to_string(&root).unwrap();
+
+             assert!(yaml.contains("b: 1"));
+
+             assert!(yaml.contains("c: 2"));
+
+        }
+
+    }
+
+    

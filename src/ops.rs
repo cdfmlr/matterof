@@ -352,6 +352,20 @@ pub fn run_rm(args: RmArgs) -> Result<()> {
                     continue;
                 }
 
+                let has_val_filter = args.value.is_some() || value_regex.is_some();
+
+                if has_val_filter && (val.is_mapping() || val.is_sequence()) {
+                    continue;
+                }
+
+                if let Some(v_target) = &args.value {
+                    let s = val_to_string(&val);
+                    if s != *v_target {
+                         kept.push((path, val));
+                         continue;
+                    }
+                }
+
                 if let Some(re) = &value_regex {
                     let s = val_to_string(&val);
                     if !re.is_match(&s) {
