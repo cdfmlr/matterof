@@ -1,21 +1,60 @@
 [package]
 name = "matterof"
-version = "0.1.1"
-edition = "2024"
+version = "0.2.0"
+edition = "2021"
+authors = ["matterof contributors"]
 license = "MIT OR Apache-2.0"
+description = "A production-ready library and CLI tool for manipulating YAML front matter in markdown files"
+homepage = "https://github.com/example/matterof"
+repository = "https://github.com/example/matterof"
+readme = "README.md"
+keywords = ["markdown", "frontmatter", "yaml", "cli", "editor"]
+categories = ["command-line-utilities", "text-processing", "parsing"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "matterof"
+path = "src_new/lib.rs"
+
+[[bin]]
+name = "matterof"
+path = "src_new/main.rs"
 
 [dependencies]
-gray_matter = "0.2.6"
-serde = "1.0.189"
-log = "0.4.20"
-walkdir = "2.4.0"
-once_cell = "1.18.0"
-env_logger = "0.10.0"
-tempfile = "3.8.0"
-anyhow = "1.0.75"
-thiserror = "1.0.50"
-regex = "1.10.2"
+# Core functionality
+serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
-clap = { version = "4.4.7", features = ["derive"] }
+serde_json = "1.0"
+
+# Front matter parsing
+gray_matter = "0.2.6"
+
+# CLI and argument parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# File operations and utilities
+walkdir = "2.4"
+tempfile = "3.8"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Regular expressions
+regex = "1.10"
+
+# Logging
+log = "0.4"
+env_logger = "0.10"
+
+[dev-dependencies]
+# Testing utilities
+tempfile = "3.8"
+pretty_assertions = "1.4"
+
+[features]
+default = ["cli"]
+cli = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
