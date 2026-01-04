@@ -1,224 +1,178 @@
-use anyhow::Result;
+//! Main CLI entry point for the matterof tool
+//!
+//! This provides a clean separation between CLI parsing and library operations,
+//! with proper error handling and logging setup.
+
 use clap::Parser;
-use std::collections::HashMap;
-use regex::Regex;
+use env_logger::Env;
+use log::{debug, error, info};
+use std::process;
 
-use matterof::{
-    args::{Commands, CommonOpts},
-    io::{resolve_files, read_to_string, write_atomic, parse, format},
-    core::{Document, Selector, parse_key_path},
-};
+// Import the CLI components directly since they're part of the binary
+mod cli_bin;
 
-#[derive(Parser)]
-#[command(name = "matterof", version, about, long_about = None)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
+use crate::cli_bin::args::{Cli, Commands};
+use crate::cli_bin::commands::*;
+use matterof::error::{MatterOfError, Result};
 
-fn main() -> Result<()> {
-    env_logger::init();
+fn main() {
+    // Parse command line arguments
     let cli = Cli::parse();
 
-    match cli.command {
+    // Setup logging based on verbosity
+    let log_level = if cli.verbose {
+        "debug"
+    } else if cli.quiet {
+        "error"
+    } else {
+        "info"
+    };
+
+    env_logger::Builder::from_env(Env::default().default_filter_or(log_level))
+        .format_timestamp(None)
+        .format_module_path(false)
+        .format_target(false)
+        .init();
+
+    debug!(
+        "Starting matterof with args: {:?}",
+        std::env::args().collect::<Vec<_>>()
+    );
+
+    // Execute the command and handle errors
+    if let Err(error) = run_command(cli.command) {
+        handle_error(error);
+        process::exit(1);
+    }
+
+    debug!("Command completed successfully");
+}
+
+/// Run the appropriate command handler
+fn run_command(command: Commands) -> Result<()> {
+    match command {
         Commands::Get(args) => {
-            let selector = Selector {
-                all: args.all,
-                keys: args.key.iter().map(|k| parse_key_path(k)).collect(),
-                key_parts: args.key_part,
-                key_regex: args.key_regex.as_deref().map(Regex::new).transpose()?,
-                key_part_regex: args.key_part_regex.iter().map(|s| Regex::new(s)).collect::<Result<Vec<_>, _>>()?,
-                value_regex: args.value_regex.as_deref().map(Regex::new).transpose()?,
-                ..Default::default()
-            };
-
-            let mut results = HashMap::new();
-            let files = resolve_files(&args.files);
-
-            for file in &files {
-                let content = read_to_string(file)?;
-                let (fm, body) = parse(&content)?;
-                let doc = Document::new(fm, body);
-                let selected = doc.select(&selector);
-                
-                if !selected.is_null() && !(selected.is_mapping() && selected.as_mapping().unwrap().is_empty()) {
-                    results.insert(file.to_string_lossy().to_string(), selected);
-                }
-            }
-
-            if results.is_empty() { return Ok(()); }
-            if files.len() == 1 {
-                println!("{}", serde_yaml::to_string(results.values().next().unwrap())?.trim_start_matches("---\
-"));
-            } else {
-                println!("{}", serde_yaml::to_string(&results)?.trim_start_matches("---\
-"));
-            }
+            debug!("Running get command");
+            get_command(args)
         }
         Commands::Set(args) => {
-            let value = parse_cli_values(&args.value, &args.type_)?;
-            let key_regex = args.key_regex.as_deref().map(Regex::new).transpose()?;
-
-            for file in resolve_files(&args.files) {
-                let content = read_to_string(&file)?;
-                let (fm, body) = parse(&content)?;
-                let mut doc = Document::new(fm, body);
-
-                if let Some(re) = &key_regex {
-                    let selector = Selector { key_regex: Some(re.clone()), ..Default::default() };
-                    let flattened: Vec<(Vec<String>, serde_yaml::Value)> = doc.data.as_ref().map(|d| matterof::core::path::flatten_yaml(d)).unwrap_or_default();
-                    for (path, val) in flattened {
-                         if selector.matches(&path, &val) {
-                             doc.set(&path, value.clone());
-                         }
-                    }
-                } else {
-                    for k in &args.key { doc.set(&parse_key_path(k), value.clone()); }
-                    if !args.key_part.is_empty() { doc.set(&args.key_part, value.clone()); }
-                }
-                save_doc(&file, &doc, &args.opts)?;
-            }
+            debug!("Running set command");
+            set_command(args)
         }
         Commands::Add(args) => {
-            let val = parse_cli_value(&args.value, &None)?;
-            let path = if let Some(k) = &args.key { parse_key_path(k) } else { args.key_part.clone() };
-
-            for file in resolve_files(&args.files) {
-                let content = read_to_string(&file)?;
-                let (fm, body) = parse(&content)?;
-                let mut doc = Document::new(fm, body);
-                doc.add(&path, val.clone(), args.index);
-                save_doc(&file, &doc, &args.opts)?;
-            }
+            debug!("Running add command");
+            add_command(args)
         }
-        Commands::Rm(args) => {
-            let selector = Selector {
-                keys: args.key.as_deref().map(|k| vec![parse_key_path(k)]).unwrap_or_default(),
-                key_parts: args.key_part,
-                key_regex: args.key_regex.as_deref().map(Regex::new).transpose()?,
-                value_match: args.value,
-                value_regex: args.value_regex.as_deref().map(Regex::new).transpose()?,
-                all: args.all,
-                ..Default::default()
-            };
-
-            for file in resolve_files(&args.files) {
-                let content = read_to_string(&file)?;
-                let (fm, body) = parse(&content)?;
-                let mut doc = Document::new(fm, body);
-                doc.remove(&selector);
-                save_doc(&file, &doc, &args.opts)?;
-            }
+        Commands::Remove(args) => {
+            debug!("Running remove command");
+            remove_command(args)
         }
         Commands::Replace(args) => {
-            let selector = Selector {
-                keys: args.key.as_deref().map(|k| vec![parse_key_path(k)]).unwrap_or_default(),
-                key_parts: args.key_part,
-                key_regex: args.key_regex.as_deref().map(Regex::new).transpose()?,
-                value_match: args.old_value,
-                value_regex: args.old_value_regex.as_deref().map(Regex::new).transpose()?,
-                ..Default::default()
-            };
-            let val = if let Some(v) = &args.value { Some(parse_cli_value(v, &args.type_)?) } else { None };
-            let new_val = if let Some(v) = &args.new_value { Some(parse_cli_value(v, &args.type_)?) } else { None };
-            let target_val = new_val.or(val);
-
-            let nk_path = if let Some(nk) = &args.new_key {
-                 Some(parse_key_path(nk))
-            } else if !args.new_key_part.is_empty() {
-                 Some(args.new_key_part.clone())
-            } else {
-                 None
-            };
-
-            for file in resolve_files(&args.files) {
-                let content = read_to_string(&file)?;
-                let (fm, body) = parse(&content)?;
-                let mut doc = Document::new(fm, body);
-                doc.replace(&selector, target_val.clone(), nk_path.clone());
-                save_doc(&file, &doc, &args.opts)?;
-            }
+            debug!("Running replace command");
+            replace_command(args)
         }
         Commands::Init(args) => {
-            for file in resolve_files(&args.files) {
-                let content = read_to_string(&file)?;
-                let (fm, body) = parse(&content)?;
-                if fm.is_none() {
-                    let doc = Document::new(Some(serde_yaml::Value::Mapping(serde_yaml::Mapping::new())), body);
-                    save_doc(&file, &doc, &CommonOpts::default())?;
-                }
-            }
+            debug!("Running init command");
+            init_command(args)
         }
         Commands::Clean(args) => {
-            for file in resolve_files(&args.files) {
-                let content = read_to_string(&file)?;
-                let (fm, body) = parse(&content)?;
-                if let Some(f) = &fm {
-                    if f.is_null() || (f.is_mapping() && f.as_mapping().unwrap().is_empty()) {
-                        let doc = Document::new(None, body);
-                        save_doc(&file, &doc, &CommonOpts::default())?;
-                    }
-                }
-            }
+            debug!("Running clean command");
+            clean_command(args)
         }
         Commands::Validate(args) => {
-            for file in resolve_files(&args.files) {
-                match read_to_string(&file).and_then(|c| parse(&c)) {
-                    Ok(_) => println!("{}: OK", file.display()),
-                    Err(e) => println!("{}: Invalid ({})", file.display(), e),
-                }
+            debug!("Running validate command");
+            validate_command(args)
+        }
+        Commands::Format(args) => {
+            debug!("Running format command");
+            format_command(args)
+        }
+    }
+}
+
+/// Handle errors with appropriate logging and user-friendly messages
+fn handle_error(error: MatterOfError) {
+    match error {
+        MatterOfError::FileNotFound { ref path } => {
+            error!("File not found: {}", path.display());
+        }
+        MatterOfError::PermissionDenied { ref path } => {
+            error!("Permission denied: {}", path.display());
+        }
+        MatterOfError::InvalidFrontMatter {
+            ref path,
+            ref reason,
+        } => {
+            error!("Invalid front matter in {}: {}", path.display(), reason);
+        }
+        MatterOfError::InvalidKeyPath {
+            ref path,
+            ref reason,
+        } => {
+            error!("Invalid key path '{}': {}", path, reason);
+        }
+        MatterOfError::InvalidQuery { ref reason } => {
+            error!("Invalid query: {}", reason);
+        }
+        MatterOfError::TypeConversion { ref from, ref to } => {
+            error!("Cannot convert '{}' to {}", from, to);
+        }
+        MatterOfError::BackupError { ref reason } => {
+            error!("Backup failed: {}", reason);
+        }
+        MatterOfError::Validation { ref message } => {
+            error!("Validation error: {}", message);
+        }
+        MatterOfError::Multiple { ref errors } => {
+            error!("Multiple errors occurred:");
+            for (i, err) in errors.iter().enumerate() {
+                error!("  {}: {}", i + 1, err);
             }
         }
-        Commands::Fmt(args) => {
-            for file in resolve_files(&args.files) {
-                let content = read_to_string(&file)?;
-                let (fm, body) = parse(&content)?;
-                if let Some(f) = fm {
-                    let doc = Document::new(Some(f), body);
-                    save_doc(&file, &doc, &CommonOpts::default())?;
-                }
-            }
+        MatterOfError::Io(ref io_error) => {
+            error!("I/O error: {}", io_error);
+        }
+        MatterOfError::Yaml(ref yaml_error) => {
+            error!("YAML error: {}", yaml_error);
+        }
+        MatterOfError::Regex(ref regex_error) => {
+            error!("Regular expression error: {}", regex_error);
+        }
+        _ => {
+            error!("Error: {}", error);
         }
     }
-    Ok(())
-}
 
-fn save_doc(path: &std::path::Path, doc: &Document, opts: &CommonOpts) -> Result<()> {
-    let new_content = format(doc.data.as_ref(), &doc.body)?;
-    
-    if opts.dry_run {
-         // Re-implementing dry-run diff logic briefly or move to IO
-         println!("--- Dry run: {} ---", path.display());
-         println!("{}", new_content);
-         return Ok(());
-    }
+    // Show additional context in debug mode
+    debug!("Error details: {:?}", error);
 
-    if opts.stdout {
-        println!("{}", new_content);
-        return Ok(());
-    }
-
-    // Simplified save for brevity in main, logic should ideally be in io::fs with options
-    write_atomic(path, &new_content)
-}
-
-fn parse_cli_values(raw: &[String], type_: &Option<String>) -> Result<serde_yaml::Value> {
-    let mut vals = Vec::new();
-    for r in raw {
-        if raw.len() == 1 {
-            for p in r.split(',') { vals.push(parse_cli_value(p, type_)?); }
-        } else {
-            vals.push(parse_cli_value(r, type_)?);
+    // Show suggestions for common errors
+    match error {
+        MatterOfError::FileNotFound { .. } => {
+            info!("Tip: Make sure the file path is correct and the file exists");
         }
+        MatterOfError::InvalidKeyPath { .. } => {
+            info!(
+                "Tip: Use quotes for keys with special characters, e.g., --key='\"key.with.dots\"'"
+            );
+        }
+        MatterOfError::InvalidQuery { .. } => {
+            info!("Tip: Check your regular expressions and query syntax");
+        }
+        MatterOfError::PermissionDenied { .. } => {
+            info!("Tip: Make sure you have read/write permissions for the file");
+        }
+        _ => {}
     }
-    Ok(if vals.len() == 1 { vals.remove(0) } else { serde_yaml::Value::Sequence(vals) })
 }
 
-fn parse_cli_value(v: &str, type_: &Option<String>) -> Result<serde_yaml::Value> {
-    match type_.as_deref() {
-        Some("int") => Ok(serde_yaml::Value::Number(v.trim().parse::<i64>()?.into())),
-        Some("float") => Ok(serde_yaml::Value::Number(serde_yaml::Number::from(v.trim().parse::<f64>()?))),
-        Some("bool") => Ok(serde_yaml::Value::Bool(v.trim().parse()?)),
-        _ => Ok(serde_yaml::Value::String(v.to_string())),
+#[cfg(test)]
+mod tests {
+    // Test module for main.rs
+
+    #[test]
+    fn test_main_compilation() {
+        // This test just ensures the main module compiles correctly
+        // More comprehensive tests would be in integration tests
     }
 }

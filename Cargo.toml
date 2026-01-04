@@ -13,11 +13,11 @@ categories = ["command-line-utilities", "text-processing", "parsing"]
 
 [lib]
 name = "matterof"
-path = "src_new/lib.rs"
+path = "src/lib.rs"
 
 [[bin]]
 name = "matterof"
-path = "src_new/main.rs"
+path = "src/main.rs"
 
 [dependencies]
 # Core functionality
