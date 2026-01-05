@@ -13,7 +13,9 @@ pub mod query;
 pub mod value;
 
 pub use document::Document;
-pub use jsonpath::{JsonPathQuery, JsonPathQueryResult, NormalizedPathUtils, YamlJsonConverter};
+pub use jsonpath::{
+    JsonMutator, JsonPathQuery, JsonPathQueryResult, NormalizedPathUtils, YamlJsonConverter,
+};
 pub use path::KeyPath;
 pub use query::{CombineMode, Query, QueryResult, ValueTypeCondition};
 pub use value::{FrontMatterValue, ValueType};

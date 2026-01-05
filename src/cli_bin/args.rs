@@ -469,11 +469,11 @@ mod tests {
 
     #[test]
     fn test_get_command() {
-        let args = vec!["matterof", "get", "--key", "title", "file.md"];
+        let args = vec!["matterof", "get", "--query", "title", "file.md"];
         let cli = Cli::try_parse_from(args).unwrap();
 
         if let Commands::Get(get_args) = cli.command {
-            assert_eq!(get_args.key, vec!["title"]);
+            assert_eq!(get_args.query, Some("title".to_string()));
             assert_eq!(get_args.files.files, vec![PathBuf::from("file.md")]);
             assert!(!get_args.all);
         } else {
@@ -484,13 +484,13 @@ mod tests {
     #[test]
     fn test_set_command() {
         let args = vec![
-            "matterof", "set", "--key", "title", "--value", "Hello", "file.md",
+            "matterof", "set", "--query", "title", "--value", "Hello", "file.md",
         ];
         let cli = Cli::try_parse_from(args).unwrap();
 
         if let Commands::Set(set_args) = cli.command {
-            assert_eq!(set_args.key, vec!["title"]);
-            assert_eq!(set_args.value, vec!["Hello"]);
+            assert_eq!(set_args.query, "title");
+            assert_eq!(set_args.value, "Hello");
             assert_eq!(set_args.files.files, vec![PathBuf::from("file.md")]);
         } else {
             panic!("Expected Set command");

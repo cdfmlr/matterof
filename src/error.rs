@@ -42,6 +42,10 @@ pub enum MatterOfError {
     #[error("Invalid query: {reason}")]
     InvalidQuery { reason: String },
 
+    /// Path parsing errors
+    #[error("Invalid path: {path} ({reason})")]
+    InvalidPath { path: String, reason: String },
+
     /// Value type conversion errors
     #[error("Type conversion error: cannot convert {from} to {to}")]
     TypeConversion { from: String, to: String },
@@ -108,6 +112,14 @@ impl MatterOfError {
     /// Create a new invalid query error
     pub fn invalid_query(reason: impl Into<String>) -> Self {
         Self::InvalidQuery {
+            reason: reason.into(),
+        }
+    }
+
+    /// Create a new invalid path error
+    pub fn invalid_path(path: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::InvalidPath {
+            path: path.into(),
             reason: reason.into(),
         }
     }
@@ -179,6 +191,7 @@ impl MatterOfError {
             | Self::InvalidFrontMatter { .. }
             | Self::InvalidKeyPath { .. }
             | Self::InvalidQuery { .. }
+            | Self::InvalidPath { .. }
             | Self::TypeConversion { .. }
             | Self::PathResolution { .. }
             | Self::BackupError { .. }
@@ -196,6 +209,7 @@ impl MatterOfError {
             Self::InvalidFrontMatter { .. } | Self::Yaml(_) => ErrorSeverity::High,
             Self::InvalidKeyPath { .. }
             | Self::InvalidQuery { .. }
+            | Self::InvalidPath { .. }
             | Self::TypeConversion { .. } => ErrorSeverity::Medium,
             Self::Validation { .. } | Self::PathResolution { .. } => ErrorSeverity::Low,
             Self::Multiple { errors } => errors
@@ -251,6 +265,10 @@ impl Clone for MatterOfError {
                 reason: reason.clone(),
             },
             Self::InvalidQuery { reason } => Self::InvalidQuery {
+                reason: reason.clone(),
+            },
+            Self::InvalidPath { path, reason } => Self::InvalidPath {
+                path: path.clone(),
                 reason: reason.clone(),
             },
             Self::TypeConversion { from, to } => Self::TypeConversion {

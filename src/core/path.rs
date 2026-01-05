@@ -37,7 +37,7 @@ impl KeyPath {
     ///
     /// Supports multiple formats:
     /// - Dot notation: "parent.child.key"
-    /// - Bracket notation: "parent['child']['key']" or "parent[\"child\"][\"key\"]"
+    /// - Bracket notation: "parent\['child'\]\['key'\]" or "parent\[\"child\"\]\[\"key\"\]"
     /// - Mixed notation: "parent.child['special.key']"
     /// - Escaped keys: "parent.\"key.with.dots\".child"
     pub fn parse(input: &str) -> Result<Self> {
