@@ -42,6 +42,8 @@ pub enum Commands {
     Remove(RemoveArgs),
     /// Replace/rename keys or values
     Replace(ReplaceArgs),
+    /// Query front matter with JSONPath
+    Query(QueryArgs),
     /// Initialize front matter in files
     Init(InitArgs),
     /// Remove empty front matter blocks
@@ -129,44 +131,16 @@ pub struct GetArgs {
     pub files: CommonFileOptions,
 
     /// Get all front matter keys and values
-    #[arg(long, conflicts_with_all = ["key", "key_part", "key_regex"])]
+    #[arg(long, conflicts_with = "query")]
     pub all: bool,
 
-    /// Specific keys to get (supports dot notation and brackets)
-    #[arg(short, long, value_name = "KEY")]
-    pub key: Vec<String>,
+    /// JSONPath query expression
+    #[arg(long, value_name = "JSONPATH", aliases = ["key", "jsonpath"])]
+    pub query: Option<String>,
 
-    /// Key parts for building nested keys
-    #[arg(long = "key-part", value_name = "PART")]
-    pub key_part: Vec<String>,
-
-    /// Regular expression to match keys
-    #[arg(long = "key-regex", value_name = "REGEX")]
-    pub key_regex: Option<String>,
-
-    /// Use exact key matching instead of hierarchical matching
+    /// Disable automatic root prepending ($ or $.)
     #[arg(long)]
-    pub exact: bool,
-
-    /// Regular expression to match key parts in nested paths
-    #[arg(long = "key-part-regex", value_name = "REGEX")]
-    pub key_part_regex: Vec<String>,
-
-    /// Regular expression to match values
-    #[arg(long = "value-regex", value_name = "REGEX")]
-    pub value_regex: Option<String>,
-
-    /// Exact value to match
-    #[arg(long = "value", value_name = "VALUE")]
-    pub value_match: Option<String>,
-
-    /// Only return keys that exist (are not null)
-    #[arg(long)]
-    pub exists_only: bool,
-
-    /// Only return keys at this depth
-    #[arg(long, value_name = "DEPTH")]
-    pub depth: Option<usize>,
+    pub no_auto_root: bool,
 
     /// Output format
     #[arg(long, value_enum, default_value = "yaml")]
@@ -186,29 +160,21 @@ pub struct SetArgs {
     #[command(flatten)]
     pub write_options: WriteOptions,
 
-    /// Keys to set (supports dot notation and brackets)
-    #[arg(short, long, value_name = "KEY", required_unless_present = "key_regex")]
-    pub key: Vec<String>,
+    /// JSONPath query expression to target for setting
+    #[arg(long, value_name = "JSONPATH", aliases = ["key", "jsonpath"], required = true)]
+    pub query: String,
 
-    /// Key parts for building nested keys
-    #[arg(long = "key-part", value_name = "PART")]
-    pub key_part: Vec<String>,
+    /// Disable automatic root prepending ($ or $.)
+    #[arg(long)]
+    pub no_auto_root: bool,
 
-    /// Regular expression to match keys to set
-    #[arg(long = "key-regex", value_name = "REGEX")]
-    pub key_regex: Option<String>,
-
-    /// Values to set
+    /// Value to set
     #[arg(short = 'V', long, value_name = "VALUE", required = true)]
-    pub value: Vec<String>,
+    pub value: String,
 
     /// Value type for type conversion
     #[arg(short, long, value_enum)]
     pub type_: Option<ValueType>,
-
-    /// Create intermediate keys if they don't exist
-    #[arg(long)]
-    pub create_parents: bool,
 }
 
 /// Arguments for the add command
@@ -220,13 +186,13 @@ pub struct AddArgs {
     #[command(flatten)]
     pub write_options: WriteOptions,
 
-    /// Key where to add the value (will create array if doesn't exist)
-    #[arg(short, long, value_name = "KEY", required_unless_present = "key_part")]
-    pub key: Option<String>,
+    /// JSONPath query expression to target for adding
+    #[arg(long, value_name = "JSONPATH", aliases = ["key", "jsonpath"], required = true)]
+    pub query: String,
 
-    /// Key parts for building nested key
-    #[arg(long = "key-part", value_name = "PART")]
-    pub key_part: Vec<String>,
+    /// Disable automatic root prepending ($ or $.)
+    #[arg(long)]
+    pub no_auto_root: bool,
 
     /// Value to add
     #[arg(short = 'V', long, value_name = "VALUE", required = true)]
@@ -235,6 +201,10 @@ pub struct AddArgs {
     /// Value type for type conversion
     #[arg(short, long, value_enum)]
     pub type_: Option<ValueType>,
+
+    /// Key to add (for object addition)
+    #[arg(long, value_name = "KEY")]
+    pub add_key: Option<String>,
 
     /// Index to insert at (default: append to end)
     #[arg(long, value_name = "INDEX")]
@@ -251,28 +221,16 @@ pub struct RemoveArgs {
     pub write_options: WriteOptions,
 
     /// Remove all front matter
-    #[arg(long, conflicts_with_all = ["key", "key_part", "key_regex", "value", "value_regex"])]
+    #[arg(long, conflicts_with = "query")]
     pub all: bool,
 
-    /// Keys to remove
-    #[arg(short, long, value_name = "KEY")]
-    pub key: Vec<String>,
+    /// JSONPath query expression to target for removal
+    #[arg(long, value_name = "JSONPATH", aliases = ["key", "jsonpath"])]
+    pub query: Option<String>,
 
-    /// Key parts for building nested keys to remove
-    #[arg(long = "key-part", value_name = "PART")]
-    pub key_part: Vec<String>,
-
-    /// Regular expression to match keys to remove
-    #[arg(long = "key-regex", value_name = "REGEX")]
-    pub key_regex: Option<String>,
-
-    /// Specific value to remove from arrays/objects
-    #[arg(long = "value", value_name = "VALUE")]
-    pub value: Option<String>,
-
-    /// Regular expression to match values to remove
-    #[arg(long = "value-regex", value_name = "REGEX")]
-    pub value_regex: Option<String>,
+    /// Disable automatic root prepending ($ or $.)
+    #[arg(long)]
+    pub no_auto_root: bool,
 
     /// Remove empty parent objects after removal
     #[arg(long)]
@@ -288,25 +246,17 @@ pub struct ReplaceArgs {
     #[command(flatten)]
     pub write_options: WriteOptions,
 
-    /// Keys to replace/rename
-    #[arg(short, long, value_name = "KEY")]
-    pub key: Vec<String>,
+    /// JSONPath query expression to target for replacement
+    #[arg(long, value_name = "JSONPATH", aliases = ["key", "jsonpath"], required = true)]
+    pub query: String,
 
-    /// Key parts for building nested keys to replace
-    #[arg(long = "key-part", value_name = "PART")]
-    pub key_part: Vec<String>,
+    /// Disable automatic root prepending ($ or $.)
+    #[arg(long)]
+    pub no_auto_root: bool,
 
-    /// Regular expression to match keys to replace
-    #[arg(long = "key-regex", value_name = "REGEX")]
-    pub key_regex: Option<String>,
-
-    /// New key name (for renaming keys)
+    /// New key name (for renaming keys - only works with single match)
     #[arg(long = "new-key", value_name = "KEY")]
     pub new_key: Option<String>,
-
-    /// New key parts for building nested new key
-    #[arg(long = "new-key-part", value_name = "PART")]
-    pub new_key_part: Vec<String>,
 
     /// New value to set (replaces old value)
     #[arg(long = "new-value", value_name = "VALUE")]
@@ -316,13 +266,36 @@ pub struct ReplaceArgs {
     #[arg(long = "old-value", value_name = "VALUE")]
     pub old_value: Option<String>,
 
-    /// Regular expression to match old values to replace
-    #[arg(long = "old-value-regex", value_name = "REGEX")]
-    pub old_value_regex: Option<String>,
-
     /// Value type for type conversion of new value
     #[arg(short, long, value_enum)]
     pub type_: Option<ValueType>,
+}
+
+/// Arguments for the query command
+#[derive(Args, Debug)]
+pub struct QueryArgs {
+    #[command(flatten)]
+    pub files: CommonFileOptions,
+
+    /// JSONPath query expression
+    #[arg(long, value_name = "JSONPATH", aliases = ["key", "jsonpath"], required = true)]
+    pub query: String,
+
+    /// Disable automatic root prepending ($ or $.)
+    #[arg(long)]
+    pub no_auto_root: bool,
+
+    /// Only count matches
+    #[arg(long)]
+    pub count: bool,
+
+    /// Check if query matches exist (exit code 0 if exists, 1 if not)
+    #[arg(long)]
+    pub exists: bool,
+
+    /// Show both normalized paths and values
+    #[arg(long)]
+    pub with_values: bool,
 }
 
 /// Arguments for the init command
@@ -418,10 +391,8 @@ pub enum OutputFormat {
     Yaml,
     /// JSON format
     Json,
-    /// Plain text (values only)
-    Text,
-    /// CSV format (for tabular data)
-    Csv,
+    /// Internal format (NormalizedPath: value lines, RFC 9535 §2.7)
+    Internal,
 }
 
 /// Output formats for validate command

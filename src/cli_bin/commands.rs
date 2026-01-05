@@ -5,12 +5,16 @@
 
 use crate::cli_bin::args::*;
 use log::{debug, info, warn};
-use matterof::core::{Document, FrontMatterValue, KeyPath, Query};
+use matterof::core::{
+    Document, FrontMatterValue, JsonPathQuery, JsonPathQueryResult, KeyPath, Query,
+    YamlJsonConverter,
+};
 use matterof::error::{MatterOfError, Result};
 use matterof::io::{
     BackupOptions, FileResolver, FrontMatterReader, FrontMatterWriter, OutputOptions, ReaderConfig,
     ResolverConfig, WriteOptions as LibWriteOptions, WriterConfig,
 };
+use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 
 /// Execute the get command
@@ -26,30 +30,60 @@ pub fn get_command(args: GetArgs) -> Result<()> {
     let reader = create_reader(&args.files)?;
     let mut results = BTreeMap::new();
 
-    // Build the query
-    let query = build_query_from_get_args(&args)?;
-
     for file in &files {
         debug!("Processing file: {}", file.display());
 
         let document = reader.read_file(file)?;
-        let query_result = document.query(&query);
 
-        if !query_result.is_empty() {
-            if files.len() == 1 {
-                // Single file - output just the values
-                output_query_result(&query_result, &args.format, args.pretty)?;
-                return Ok(());
-            } else {
-                // Multiple files - collect results
-                results.insert(file.to_string_lossy().to_string(), query_result);
+        if args.all {
+            // Get all front matter
+            if let Some(front_matter) = document.front_matter() {
+                let yaml_value = YamlJsonConverter::document_front_matter_to_yaml(front_matter);
+                if files.len() == 1 {
+                    output_yaml_value(&yaml_value, &args.format, args.pretty)?;
+                    return Ok(());
+                } else {
+                    results.insert(file.to_string_lossy().to_string(), yaml_value);
+                }
             }
+        } else if let Some(query_str) = &args.query {
+            // Use JSONPath query
+            let jsonpath_query = if args.no_auto_root {
+                JsonPathQuery::new_with_options(query_str, false)?
+            } else {
+                JsonPathQuery::new(query_str)?
+            };
+
+            if let Some(front_matter) = document.front_matter() {
+                let yaml_value = YamlJsonConverter::document_front_matter_to_yaml(front_matter);
+                let json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
+                let located_results = jsonpath_query.query_located(&json_value);
+                let matches: Vec<_> = located_results
+                    .into_iter()
+                    .map(|(path, value)| (path, value.clone()))
+                    .collect();
+
+                let query_result = JsonPathQueryResult::new(jsonpath_query.clone(), matches);
+
+                if !query_result.is_empty() {
+                    if files.len() == 1 {
+                        output_jsonpath_result(&query_result, &args.format, args.pretty)?;
+                        return Ok(());
+                    } else {
+                        results.insert(file.to_string_lossy().to_string(), query_result.to_yaml()?);
+                    }
+                }
+            }
+        } else {
+            return Err(MatterOfError::validation(
+                "Either --all or --query must be specified".to_string(),
+            ));
         }
     }
 
     // Output results for multiple files
     if !results.is_empty() {
-        output_multiple_file_results(&results, &args.format, args.pretty)?;
+        output_multiple_yaml_results(&results, &args.format, args.pretty)?;
     } else {
         info!("No matching values found");
     }
@@ -71,11 +105,15 @@ pub fn set_command(args: SetArgs) -> Result<()> {
     let writer = create_writer(&args.write_options)?;
     let write_options = create_write_options(&args.write_options)?;
 
-    // Parse values
-    let values = parse_cli_values(&args.value, args.type_.map(Into::into).as_ref())?;
+    // Parse value
+    let value = parse_cli_value(&args.value, args.type_.map(Into::into).as_ref())?;
 
-    // Build key paths
-    let key_paths = build_key_paths(&args.key, &args.key_part, args.key_regex.as_deref())?;
+    // Create JSONPath query
+    let jsonpath_query = if args.no_auto_root {
+        JsonPathQuery::new_with_options(&args.query, false)?
+    } else {
+        JsonPathQuery::new(&args.query)?
+    };
 
     let mut processed_count = 0;
 
@@ -88,13 +126,7 @@ pub fn set_command(args: SetArgs) -> Result<()> {
             Document::empty()
         };
 
-        let mut modified = false;
-
-        for key_path in &key_paths {
-            debug!("Setting key: {} = {:?}", key_path, values);
-            document.set(key_path, values.clone())?;
-            modified = true;
-        }
+        let modified = set_jsonpath_value(&mut document, &jsonpath_query, &value)?;
 
         if modified {
             let result = writer.write_file(&document, &file, Some(write_options.clone()))?;
@@ -115,6 +147,99 @@ pub fn set_command(args: SetArgs) -> Result<()> {
     Ok(())
 }
 
+/// Execute the query command
+pub fn query_command(args: QueryArgs) -> Result<()> {
+    debug!("Executing query command with args: {:?}", args);
+
+    let files = resolve_files(&args.files)?;
+    if files.is_empty() {
+        warn!("No files found to process");
+        return Ok(());
+    }
+
+    let reader = create_reader(&args.files)?;
+
+    // Create JSONPath query
+    let jsonpath_query = if args.no_auto_root {
+        JsonPathQuery::new_with_options(&args.query, false)?
+    } else {
+        JsonPathQuery::new(&args.query)?
+    };
+
+    let mut total_matches = 0;
+    let mut any_matches = false;
+
+    for file in &files {
+        debug!("Processing file: {}", file.display());
+
+        let document = reader.read_file(file)?;
+
+        // Convert front matter to JSON for JSONPath processing
+        let front_matter = document.front_matter();
+        if front_matter.is_none() {
+            continue;
+        }
+
+        let yaml_value = YamlJsonConverter::document_front_matter_to_yaml(front_matter.unwrap());
+        let json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
+        let located_results = jsonpath_query.query_located(&json_value);
+        let matches: Vec<_> = located_results
+            .into_iter()
+            .map(|(path, value)| (path, value.clone()))
+            .collect();
+
+        let query_result = JsonPathQueryResult::new(jsonpath_query.clone(), matches);
+
+        if !query_result.is_empty() {
+            any_matches = true;
+            total_matches += query_result.len();
+
+            if args.count {
+                // Just count, don't output results yet
+                continue;
+            } else if args.exists {
+                // Just check existence, exit early on first match
+                std::process::exit(0);
+            } else if args.with_values {
+                // Show normalized paths with values
+                if files.len() > 1 {
+                    println!("{}:", file.display());
+                }
+                for line in query_result.to_internal_format() {
+                    if files.len() > 1 {
+                        println!("  {}", line);
+                    } else {
+                        println!("{}", line);
+                    }
+                }
+            } else {
+                // Show just normalized paths
+                if files.len() > 1 {
+                    println!("{}:", file.display());
+                }
+                for path in query_result.paths() {
+                    if files.len() > 1 {
+                        println!("  {}", path);
+                    } else {
+                        println!("{}", path);
+                    }
+                }
+            }
+        }
+    }
+
+    if args.count {
+        println!("{}", total_matches);
+    } else if args.exists {
+        // If we reach here, no matches were found
+        std::process::exit(1);
+    } else if !any_matches {
+        debug!("No matching values found");
+    }
+
+    Ok(())
+}
+
 /// Execute the add command
 pub fn add_command(args: AddArgs) -> Result<()> {
     debug!("Executing add command");
@@ -129,11 +254,11 @@ pub fn add_command(args: AddArgs) -> Result<()> {
     let writer = create_writer(&args.write_options)?;
     let write_options = create_write_options(&args.write_options)?;
 
-    // Build key path
-    let key_path = if let Some(key) = &args.key {
-        KeyPath::parse(key)?
+    // Create JSONPath query
+    let _jsonpath_query = if args.no_auto_root {
+        JsonPathQuery::new_with_options(&args.query, false)?
     } else {
-        KeyPath::from_segments(args.key_part.clone())
+        JsonPathQuery::new(&args.query)?
     };
 
     // Parse value
@@ -151,7 +276,19 @@ pub fn add_command(args: AddArgs) -> Result<()> {
             Document::empty()
         };
 
-        document.add_to_array(&key_path, value.clone(), args.index)?;
+        // For now, use a simplified approach for add operations
+        // TODO: Implement proper JSONPath-based array additions
+        let key_path =
+            KeyPath::parse(&args.query.trim_start_matches("$.").trim_start_matches("$"))?;
+
+        if let Some(add_key) = &args.add_key {
+            // Add to object
+            let object_key_path = KeyPath::parse(add_key)?;
+            document.set(&object_key_path, value.clone())?;
+        } else {
+            // Add to array
+            document.add_to_array(&key_path, value.clone(), args.index)?;
+        }
 
         let result = writer.write_file(&document, &file, Some(write_options.clone()))?;
         if result.modified {
@@ -197,15 +334,22 @@ pub fn remove_command(args: RemoveArgs) -> Result<()> {
             document = Document::new(None, document.body().to_string());
             modified = true;
         } else {
-            // Build query for removal
-            let query = build_removal_query(&args)?;
+            // Use JSONPath query for removal
+            if let Some(query_str) = &args.query {
+                let _jsonpath_query = if args.no_auto_root {
+                    JsonPathQuery::new_with_options(query_str, false)?
+                } else {
+                    JsonPathQuery::new(query_str)?
+                };
 
-            // Find matches to remove
-            let matches = document.query(&query);
-            for (key_path, _) in matches.matches() {
-                debug!("Removing key: {}", key_path);
-                document.remove(key_path)?;
-                modified = true;
+                // For now, use a simplified approach
+                // TODO: Implement proper JSONPath-based removal
+                let simple_key = query_str.trim_start_matches("$.").trim_start_matches("$");
+                let key_path = KeyPath::parse(simple_key)?;
+                if document.remove(&key_path)?.is_some() {
+                    modified = true;
+                    debug!("Removed key: {}", key_path);
+                }
             }
 
             if args.cleanup_empty {
@@ -254,37 +398,39 @@ pub fn replace_command(args: ReplaceArgs) -> Result<()> {
         let mut document = reader.read_file(&file)?;
         let mut modified = false;
 
-        // Build query for what to replace
-        let query = build_replacement_query(&args)?;
+        // Use JSONPath query for replacement
+        let _jsonpath_query = if args.no_auto_root {
+            JsonPathQuery::new_with_options(&args.query, false)?
+        } else {
+            JsonPathQuery::new(&args.query)?
+        };
 
-        // Find matches
-        let matches = document.query(&query);
+        // For now, use a simplified approach
+        // TODO: Implement proper JSONPath-based replacement
+        let simple_key = args.query.trim_start_matches("$.").trim_start_matches("$");
+        let old_key_path = KeyPath::parse(simple_key)?;
 
-        for (old_key_path, _) in matches.matches() {
+        if let Some(existing_value) = document.get(&old_key_path) {
             // Determine new key path
             let new_key_path = if let Some(new_key) = &args.new_key {
                 KeyPath::parse(new_key)?
-            } else if !args.new_key_part.is_empty() {
-                KeyPath::from_segments(args.new_key_part.clone())
             } else {
                 old_key_path.clone()
             };
 
-            // Get current value or use new value
+            // Get new value
             let new_value = if let Some(new_val_str) = &args.new_value {
                 FrontMatterValue::parse_from_string(
                     new_val_str,
                     args.type_.map(Into::into).as_ref(),
                 )?
             } else {
-                document
-                    .get(old_key_path)
-                    .unwrap_or(FrontMatterValue::null())
+                existing_value
             };
 
             // Remove old key if different from new key
-            if old_key_path != &new_key_path {
-                document.remove(old_key_path)?;
+            if old_key_path != new_key_path {
+                document.remove(&old_key_path)?;
             }
 
             // Set new value at new key
@@ -618,73 +764,83 @@ fn create_write_options(write_options: &WriteOptions) -> Result<LibWriteOptions>
     })
 }
 
-fn build_query_from_get_args(args: &GetArgs) -> Result<Query> {
-    if args.all {
-        return Ok(Query::all());
+/// Set a value in a document using JSONPath
+fn set_jsonpath_value(
+    document: &mut Document,
+    jsonpath_query: &JsonPathQuery,
+    new_value: &FrontMatterValue,
+) -> Result<bool> {
+    // Ensure document has front matter
+    document.ensure_front_matter();
+
+    let front_matter = document.front_matter().unwrap();
+    let yaml_value = YamlJsonConverter::document_front_matter_to_yaml(front_matter);
+    let json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
+
+    // Find all matching locations first
+    let located_results = jsonpath_query.query_located(&json_value);
+
+    if located_results.is_empty() {
+        debug!("No matches found for JSONPath query");
+        return Ok(false);
     }
 
-    let mut query = Query::new();
-    let mut has_conditions = false;
+    // Collect the path strings to avoid borrowing issues
+    let path_strings: Vec<String> = located_results
+        .into_iter()
+        .map(|(path, _)| path.to_string())
+        .collect();
 
-    // Add key conditions
-    if !args.key.is_empty() {
-        let key_paths: Result<Vec<KeyPath>> = args.key.iter().map(|k| KeyPath::parse(k)).collect();
-        for key_path in key_paths? {
-            if args.exact {
-                query = query.and_exact_key(key_path);
-            } else {
-                query = query.and_key(key_path);
-            }
-            has_conditions = true;
+    // Now work with a fresh mutable copy of the JSON
+    let mut json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
+    let new_json_value = YamlJsonConverter::front_matter_to_json(new_value)?;
+
+    // Set value at all matching locations
+    for path_string in path_strings {
+        set_json_value_at_path_string(&mut json_value, &path_string, &new_json_value)?;
+    }
+
+    // Convert back to YAML and update document
+    let updated_yaml = YamlJsonConverter::json_to_yaml(&json_value)?;
+    let updated_front_matter = YamlJsonConverter::yaml_to_document_front_matter(&updated_yaml)?;
+    *document = Document::new(Some(updated_front_matter), document.body().to_string());
+
+    Ok(true)
+}
+
+/// Set a JSON value at a specific normalized path string
+fn set_json_value_at_path_string(
+    json_value: &mut JsonValue,
+    path_str: &str,
+    new_value: &JsonValue,
+) -> Result<()> {
+    // This is a simplified implementation
+    // In practice, you'd need to parse the NormalizedPath and navigate the JSON structure
+    // For now, we'll use a basic approach with the path string
+
+    // Simple handling for root-level keys like $['key']
+    if let Some(key) = extract_simple_key(path_str) {
+        if let JsonValue::Object(ref mut obj) = json_value {
+            obj.insert(key, new_value.clone());
+            return Ok(());
         }
     }
 
-    // Add key part conditions
-    if !args.key_part.is_empty() {
-        let key_path = KeyPath::from_segments(args.key_part.clone());
-        if args.exact {
-            query = query.and_exact_key(key_path);
-        } else {
-            query = query.and_key(key_path);
-        }
-        has_conditions = true;
-    }
+    // For more complex paths, we'd need a more sophisticated approach
+    Err(MatterOfError::not_supported(format!(
+        "Complex path modifications not yet supported: {}",
+        path_str
+    )))
+}
 
-    // Add regex conditions
-    if let Some(ref key_regex) = args.key_regex {
-        query = query.and_key_regex(key_regex)?;
-        has_conditions = true;
+/// Extract a simple key from a normalized path like $['key']
+fn extract_simple_key(path_str: &str) -> Option<String> {
+    if path_str.starts_with("$['") && path_str.ends_with("']") {
+        let key = &path_str[3..path_str.len() - 2];
+        Some(key.to_string())
+    } else {
+        None
     }
-
-    if let Some(ref value_regex) = args.value_regex {
-        query = query.and_value_regex(value_regex)?;
-        has_conditions = true;
-    }
-
-    // Add value match condition
-    if let Some(ref value_match) = args.value_match {
-        let value = FrontMatterValue::string(value_match);
-        query = query.and_value(value);
-        has_conditions = true;
-    }
-
-    // Add depth condition
-    if let Some(depth) = args.depth {
-        query = query.and_depth(depth);
-        has_conditions = true;
-    }
-
-    // Add exists condition
-    if args.exists_only {
-        query = query.and_exists();
-        has_conditions = true;
-    }
-
-    if !has_conditions {
-        query = Query::all();
-    }
-
-    Ok(query)
 }
 
 fn build_key_paths(
@@ -718,105 +874,27 @@ fn build_key_paths(
     Ok(key_paths)
 }
 
-fn build_removal_query(args: &RemoveArgs) -> Result<Query> {
-    let mut query = Query::new();
-    let mut has_conditions = false;
-
-    // Add key conditions
-    for key in &args.key {
-        let key_path = KeyPath::parse(key)?;
-        query = query.and_key(key_path);
-        has_conditions = true;
-    }
-
-    if !args.key_part.is_empty() {
-        let key_path = KeyPath::from_segments(args.key_part.clone());
-        query = query.and_key(key_path);
-        has_conditions = true;
-    }
-
-    if let Some(ref key_regex) = args.key_regex {
-        query = query.and_key_regex(key_regex)?;
-        has_conditions = true;
-    }
-
-    if let Some(ref value) = args.value {
-        let value_obj = FrontMatterValue::string(value);
-        query = query.and_value(value_obj);
-        has_conditions = true;
-    }
-
-    if let Some(ref value_regex) = args.value_regex {
-        query = query.and_value_regex(value_regex)?;
-        has_conditions = true;
-    }
-
-    if !has_conditions {
-        return Err(MatterOfError::validation(
-            "No removal criteria specified".to_string(),
-        ));
-    }
-
-    Ok(query)
+fn build_removal_query(_args: &RemoveArgs) -> Result<Query> {
+    // This function is deprecated in favor of JSONPath queries
+    // Return a placeholder error for now
+    Err(MatterOfError::not_supported(
+        "Legacy query-based removal. Use JSONPath queries instead.".to_string(),
+    ))
 }
 
-fn build_replacement_query(args: &ReplaceArgs) -> Result<Query> {
-    let mut query = Query::new();
-    let mut has_conditions = false;
-
-    // Add key conditions
-    for key in &args.key {
-        let key_path = KeyPath::parse(key)?;
-        query = query.and_key(key_path);
-        has_conditions = true;
-    }
-
-    if !args.key_part.is_empty() {
-        let key_path = KeyPath::from_segments(args.key_part.clone());
-        query = query.and_key(key_path);
-        has_conditions = true;
-    }
-
-    if let Some(ref key_regex) = args.key_regex {
-        query = query.and_key_regex(key_regex)?;
-        has_conditions = true;
-    }
-
-    if let Some(ref old_value) = args.old_value {
-        let value_obj = FrontMatterValue::string(old_value);
-        query = query.and_value(value_obj);
-        has_conditions = true;
-    }
-
-    if let Some(ref old_value_regex) = args.old_value_regex {
-        query = query.and_value_regex(old_value_regex)?;
-        has_conditions = true;
-    }
-
-    if !has_conditions {
-        return Err(MatterOfError::validation(
-            "No replacement criteria specified".to_string(),
-        ));
-    }
-
-    Ok(query)
+fn build_replacement_query(_args: &ReplaceArgs) -> Result<Query> {
+    // This function is deprecated in favor of JSONPath queries
+    // Return a placeholder error for now
+    Err(MatterOfError::not_supported(
+        "Legacy query-based replacement. Use JSONPath queries instead.".to_string(),
+    ))
 }
 
-fn parse_cli_values(
-    values: &[String],
+fn parse_cli_value(
+    value: &str,
     value_type: Option<&matterof::core::ValueType>,
 ) -> Result<FrontMatterValue> {
-    if values.len() == 1 {
-        // Single value
-        FrontMatterValue::parse_from_string(&values[0], value_type)
-    } else {
-        // Multiple values - create array
-        let parsed_values: Result<Vec<FrontMatterValue>> = values
-            .iter()
-            .map(|v| FrontMatterValue::parse_from_string(v, value_type))
-            .collect();
-        Ok(FrontMatterValue::array(parsed_values?))
-    }
+    FrontMatterValue::parse_from_string(value, value_type)
 }
 
 fn parse_default_values(defaults: &[String]) -> Result<Vec<(KeyPath, FrontMatterValue)>> {
@@ -839,39 +917,32 @@ fn parse_default_values(defaults: &[String]) -> Result<Vec<(KeyPath, FrontMatter
     Ok(result)
 }
 
-fn output_query_result(
-    result: &matterof::core::QueryResult,
+fn output_jsonpath_result(
+    result: &JsonPathQueryResult,
     format: &OutputFormat,
     pretty: bool,
 ) -> Result<()> {
-    let yaml_value = result.to_yaml_value();
-
     match format {
         OutputFormat::Yaml => {
+            let yaml_value = result.to_yaml()?;
             let output = serde_yaml::to_string(&yaml_value)?;
             print!("{}", output);
         }
         OutputFormat::Json => {
+            let json_value = result.to_json()?;
             if pretty {
-                let output = serde_json::to_string_pretty(&yaml_value)
+                let output = serde_json::to_string_pretty(&json_value)
                     .map_err(|e| MatterOfError::validation(e.to_string()))?;
                 println!("{}", output);
             } else {
-                let output = serde_json::to_string(&yaml_value)
+                let output = serde_json::to_string(&json_value)
                     .map_err(|e| MatterOfError::validation(e.to_string()))?;
                 println!("{}", output);
             }
         }
-        OutputFormat::Text => {
-            for (_, value) in result.matches() {
-                println!("{}", value.to_string_representation());
-            }
-        }
-        OutputFormat::Csv => {
-            // Simple CSV output for flat key-value pairs
-            println!("key,value");
-            for (key_path, value) in result.matches() {
-                println!("{},{}", key_path, value.to_string_representation());
+        OutputFormat::Internal => {
+            for line in result.to_internal_format() {
+                println!("{}", line);
             }
         }
     }
@@ -879,8 +950,39 @@ fn output_query_result(
     Ok(())
 }
 
-fn output_multiple_file_results(
-    results: &BTreeMap<String, matterof::core::QueryResult>,
+fn output_yaml_value(
+    yaml_value: &serde_yaml::Value,
+    format: &OutputFormat,
+    pretty: bool,
+) -> Result<()> {
+    match format {
+        OutputFormat::Yaml => {
+            let output = serde_yaml::to_string(yaml_value)?;
+            print!("{}", output);
+        }
+        OutputFormat::Json => {
+            let json_value = YamlJsonConverter::yaml_to_json(yaml_value)?;
+            if pretty {
+                let output = serde_json::to_string_pretty(&json_value)
+                    .map_err(|e| MatterOfError::validation(e.to_string()))?;
+                println!("{}", output);
+            } else {
+                let output = serde_json::to_string(&json_value)
+                    .map_err(|e| MatterOfError::validation(e.to_string()))?;
+                println!("{}", output);
+            }
+        }
+        OutputFormat::Internal => {
+            // For --all queries, show the root path
+            println!("$: {}", serde_yaml::to_string(yaml_value)?.trim());
+        }
+    }
+
+    Ok(())
+}
+
+fn output_multiple_yaml_results(
+    results: &BTreeMap<String, serde_yaml::Value>,
     format: &OutputFormat,
     pretty: bool,
 ) -> Result<()> {
@@ -888,10 +990,7 @@ fn output_multiple_file_results(
         OutputFormat::Yaml => {
             let mut output_map = serde_yaml::Mapping::new();
             for (filename, result) in results {
-                output_map.insert(
-                    serde_yaml::Value::String(filename.clone()),
-                    result.to_yaml_value(),
-                );
+                output_map.insert(serde_yaml::Value::String(filename.clone()), result.clone());
             }
             let output = serde_yaml::to_string(&serde_yaml::Value::Mapping(output_map))?;
             print!("{}", output);
@@ -900,7 +999,7 @@ fn output_multiple_file_results(
             // For other formats, output each file separately
             for (filename, result) in results {
                 println!("# {}", filename);
-                output_query_result(result, format, pretty)?;
+                output_yaml_value(result, format, pretty)?;
                 println!();
             }
         }

@@ -71,6 +71,10 @@ fn run_command(command: Commands) -> Result<()> {
             debug!("Running replace command");
             replace_command(args)
         }
+        Commands::Query(args) => {
+            debug!("Running query command");
+            query_command(args)
+        }
         Commands::Init(args) => {
             debug!("Running init command");
             init_command(args)

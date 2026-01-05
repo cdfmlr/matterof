@@ -7,11 +7,13 @@
 //! - Query: Composable query system for filtering and selecting data
 
 pub mod document;
+pub mod jsonpath;
 pub mod path;
 pub mod query;
 pub mod value;
 
 pub use document::Document;
+pub use jsonpath::{JsonPathQuery, JsonPathQueryResult, NormalizedPathUtils, YamlJsonConverter};
 pub use path::KeyPath;
 pub use query::{CombineMode, Query, QueryResult, ValueTypeCondition};
 pub use value::{FrontMatterValue, ValueType};

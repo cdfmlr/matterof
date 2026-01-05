@@ -141,8 +141,8 @@ pub use error::{ErrorSeverity, MatterOfError, Result};
 
 // Core types
 pub use core::{
-    CombineMode, Document, FrontMatterValue, KeyPath, Query, QueryResult, ValueType,
-    ValueTypeCondition,
+    CombineMode, Document, FrontMatterValue, JsonPathQuery, JsonPathQueryResult, KeyPath,
+    NormalizedPathUtils, Query, QueryResult, ValueType, ValueTypeCondition, YamlJsonConverter,
 };
 
 // IO types
