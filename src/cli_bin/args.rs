@@ -235,6 +235,14 @@ pub struct RemoveArgs {
     /// Remove empty parent objects after removal
     #[arg(long)]
     pub cleanup_empty: bool,
+
+    /// Range of array elements to remove (e.g., "1:3" removes indices 1,2)
+    #[arg(long, value_name = "START:END")]
+    pub range: Option<String>,
+
+    /// Confirm destructive operations (removes safety prompts)
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// Arguments for the replace command

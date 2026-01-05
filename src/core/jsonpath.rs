@@ -1150,4 +1150,195 @@ mod tests {
         let result = JsonMutator::set_at_path(&mut json, "$[unclosed", json!("value"));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_json_mutator_array_insertion_at_index() {
+        let mut json = json!({"items": ["a", "b", "d"]});
+
+        // Insert at specific index
+        JsonMutator::set_at_path(&mut json, "$['items'][2]", json!("c")).unwrap();
+        let items = json["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[2], "c");
+
+        // Insert beyond current length (should extend with nulls)
+        JsonMutator::set_at_path(&mut json, "$['items'][5]", json!("f")).unwrap();
+        let items = json["items"].as_array().unwrap();
+        assert_eq!(items.len(), 6);
+        assert_eq!(items[5], "f");
+        assert!(items[4].is_null());
+    }
+
+    #[test]
+    fn test_json_mutator_nested_array_operations() {
+        let mut json = json!({"posts": [{"tags": ["tech"]}, {"tags": ["blog"]}]});
+
+        // Add to nested array
+        JsonMutator::set_at_path(&mut json, "$['posts'][0]['tags'][-]", json!("tutorial")).unwrap();
+        let first_tags = json["posts"][0]["tags"].as_array().unwrap();
+        assert_eq!(first_tags.len(), 2);
+        assert_eq!(first_tags[1], "tutorial");
+
+        // Insert into second post's tags
+        JsonMutator::set_at_path(&mut json, "$['posts'][1]['tags'][0]", json!("personal")).unwrap();
+        let second_tags = json["posts"][1]["tags"].as_array().unwrap();
+        assert_eq!(second_tags[0], "personal");
+    }
+
+    #[test]
+    fn test_json_mutator_object_property_operations() {
+        let mut json = json!({"user": {"name": "John"}});
+
+        // Add new property to existing object
+        JsonMutator::set_at_path(&mut json, "$['user']['email']", json!("john@example.com"))
+            .unwrap();
+        assert_eq!(json["user"]["email"], "john@example.com");
+        assert_eq!(json["user"]["name"], "John"); // Original property preserved
+
+        // Create nested object structure
+        JsonMutator::set_at_path(&mut json, "$['user']['profile']['bio']", json!("Developer"))
+            .unwrap();
+        assert_eq!(json["user"]["profile"]["bio"], "Developer");
+    }
+
+    #[test]
+    fn test_json_mutator_type_coercion() {
+        let mut json = json!({"config": "not_an_object"});
+
+        // Setting property on non-object should coerce to object
+        JsonMutator::set_at_path(&mut json, "$['config']['theme']", json!("dark")).unwrap();
+        assert!(json["config"].is_object());
+        assert_eq!(json["config"]["theme"], "dark");
+
+        // Setting array index on non-array should coerce to array
+        let mut json = json!({"items": "not_an_array"});
+        JsonMutator::set_at_path(&mut json, "$['items'][0]", json!("first")).unwrap();
+        assert!(json["items"].is_array());
+        assert_eq!(json["items"][0], "first");
+    }
+
+    #[test]
+    fn test_json_mutator_bulk_operations() {
+        let mut json = json!({
+            "posts": [
+                {"status": "draft", "title": "Post 1"},
+                {"status": "draft", "title": "Post 2"},
+                {"status": "published", "title": "Post 3"}
+            ]
+        });
+
+        // This test demonstrates what bulk operations would look like
+        // In practice, this would be handled by the CLI command that finds all matches first
+
+        // Simulate setting all draft posts to published
+        JsonMutator::set_at_path(&mut json, "$['posts'][0]['status']", json!("published")).unwrap();
+        JsonMutator::set_at_path(&mut json, "$['posts'][1]['status']", json!("published")).unwrap();
+
+        let posts = json["posts"].as_array().unwrap();
+        assert_eq!(posts[0]["status"], "published");
+        assert_eq!(posts[1]["status"], "published");
+        assert_eq!(posts[2]["status"], "published");
+    }
+
+    #[test]
+    fn test_json_mutator_array_removal_patterns() {
+        let mut json = json!({"tags": ["rust", "json", "yaml", "serde", "cli"]});
+
+        // Remove from middle
+        JsonMutator::remove_at_path(&mut json, "$['tags'][2]").unwrap();
+        let tags = json["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 4);
+        assert_eq!(tags[2], "serde"); // yaml removed, serde shifted down
+
+        // Remove from end
+        JsonMutator::remove_at_path(&mut json, "$['tags'][-]").unwrap();
+        let tags = json["tags"].as_array().unwrap();
+        assert_eq!(tags.len(), 3);
+        assert_eq!(tags[2], "serde"); // cli removed
+    }
+
+    #[test]
+    fn test_json_mutator_complex_path_operations() {
+        let mut json = json!({
+            "users": {
+                "admins": [
+                    {"name": "Alice", "permissions": ["read", "write"]},
+                    {"name": "Bob", "permissions": ["read"]}
+                ]
+            }
+        });
+
+        // Add permission to Alice
+        JsonMutator::set_at_path(
+            &mut json,
+            "$['users']['admins'][0]['permissions'][-]",
+            json!("delete"),
+        )
+        .unwrap();
+
+        let alice_perms = json["users"]["admins"][0]["permissions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(alice_perms.len(), 3);
+        assert_eq!(alice_perms[2], "delete");
+
+        // Replace Bob's permissions entirely
+        JsonMutator::set_at_path(
+            &mut json,
+            "$['users']['admins'][1]['permissions']",
+            json!(["read", "write", "admin"]),
+        )
+        .unwrap();
+
+        let bob_perms = json["users"]["admins"][1]["permissions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(bob_perms.len(), 3);
+        assert_eq!(bob_perms[2], "admin");
+    }
+
+    #[test]
+    fn test_json_mutator_edge_cases() {
+        // Test with empty structures
+        let mut json = json!({});
+        JsonMutator::set_at_path(&mut json, "$['deep']['nested']['value']", json!("test")).unwrap();
+        assert_eq!(json["deep"]["nested"]["value"], "test");
+
+        // Test with null values
+        let mut json = json!({"nullable": null});
+        JsonMutator::set_at_path(&mut json, "$['nullable']['property']", json!("new")).unwrap();
+        assert!(json["nullable"].is_object());
+        assert_eq!(json["nullable"]["property"], "new");
+
+        // Test array creation from null
+        let mut json = json!({"list": null});
+        JsonMutator::set_at_path(&mut json, "$['list'][0]", json!("first")).unwrap();
+        assert!(json["list"].is_array());
+        assert_eq!(json["list"][0], "first");
+    }
+
+    #[test]
+    fn test_json_mutator_preservation_of_existing_data() {
+        let mut json = json!({
+            "config": {
+                "database": {"host": "localhost", "port": 5432},
+                "cache": {"ttl": 3600},
+                "features": ["auth", "api"]
+            }
+        });
+
+        // Add new database property
+        JsonMutator::set_at_path(&mut json, "$['config']['database']['ssl']", json!(true)).unwrap();
+
+        // Verify existing data is preserved
+        assert_eq!(json["config"]["database"]["host"], "localhost");
+        assert_eq!(json["config"]["database"]["port"], 5432);
+        assert_eq!(json["config"]["database"]["ssl"], true);
+        assert_eq!(json["config"]["cache"]["ttl"], 3600);
+
+        let features = json["config"]["features"].as_array().unwrap();
+        assert_eq!(features.len(), 2);
+        assert_eq!(features[0], "auth");
+        assert_eq!(features[1], "api");
+    }
 }

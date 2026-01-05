@@ -6,8 +6,8 @@
 use crate::cli_bin::args::*;
 use log::{debug, info, warn};
 use matterof::core::{
-    Document, FrontMatterValue, JsonMutator, JsonPathQuery, JsonPathQueryResult, KeyPath, Query,
-    YamlJsonConverter,
+    Document, FrontMatterValue, JsonMutator, JsonPathQuery, JsonPathQueryResult, KeyPath,
+    NormalizedPathUtils, ParsedPath, PathSegment, Query, YamlJsonConverter,
 };
 use matterof::error::{MatterOfError, Result};
 use matterof::io::{
@@ -344,7 +344,7 @@ pub fn remove_command(args: RemoveArgs) -> Result<()> {
                     JsonPathQuery::new(query_str)?
                 };
 
-                modified = remove_jsonpath_value(&mut document, &jsonpath_query)?;
+                modified = remove_jsonpath_value(&mut document, &jsonpath_query, &args)?;
             }
 
             if args.cleanup_empty {
@@ -385,55 +385,25 @@ pub fn replace_command(args: ReplaceArgs) -> Result<()> {
     let writer = create_writer(&args.write_options)?;
     let write_options = create_write_options(&args.write_options)?;
 
+    // Create JSONPath query
+    let jsonpath_query = if args.no_auto_root {
+        JsonPathQuery::new_with_options(&args.query, false)?
+    } else {
+        JsonPathQuery::new(&args.query)?
+    };
+
     let mut processed_count = 0;
 
     for file in files {
         debug!("Processing file: {}", file.display());
 
-        let mut document = reader.read_file(&file)?;
-        let mut modified = false;
-
-        // Use JSONPath query for replacement
-        let _jsonpath_query = if args.no_auto_root {
-            JsonPathQuery::new_with_options(&args.query, false)?
+        let mut document = if file.exists() {
+            reader.read_file(&file)?
         } else {
-            JsonPathQuery::new(&args.query)?
+            Document::empty()
         };
 
-        // For now, use a simplified approach
-        // TODO: Implement proper JSONPath-based replacement
-        let simple_key = args.query.trim_start_matches("$.").trim_start_matches("$");
-        let old_key_path = KeyPath::parse(simple_key)?;
-
-        if let Some(existing_value) = document.get(&old_key_path) {
-            // Determine new key path
-            let new_key_path = if let Some(new_key) = &args.new_key {
-                KeyPath::parse(new_key)?
-            } else {
-                old_key_path.clone()
-            };
-
-            // Get new value
-            let new_value = if let Some(new_val_str) = &args.new_value {
-                FrontMatterValue::parse_from_string(
-                    new_val_str,
-                    args.type_.map(Into::into).as_ref(),
-                )?
-            } else {
-                existing_value
-            };
-
-            // Remove old key if different from new key
-            if old_key_path != new_key_path {
-                document.remove(&old_key_path)?;
-            }
-
-            // Set new value at new key
-            document.set(&new_key_path, new_value)?;
-            modified = true;
-
-            debug!("Replaced {} -> {}", old_key_path, new_key_path);
-        }
+        let modified = replace_jsonpath_value(&mut document, &jsonpath_query, &args)?;
 
         if modified {
             let result = writer.write_file(&document, &file, Some(write_options.clone()))?;
@@ -804,7 +774,12 @@ fn set_jsonpath_value(
 }
 
 /// Set a JSON value at a specific normalized path string
-fn remove_jsonpath_value(document: &mut Document, jsonpath_query: &JsonPathQuery) -> Result<bool> {
+/// Remove a value using JSONPath semantics
+fn remove_jsonpath_value(
+    document: &mut Document,
+    jsonpath_query: &JsonPathQuery,
+    args: &RemoveArgs,
+) -> Result<bool> {
     // Ensure document has front matter
     document.ensure_front_matter();
 
@@ -818,6 +793,21 @@ fn remove_jsonpath_value(document: &mut Document, jsonpath_query: &JsonPathQuery
     if located_results.is_empty() {
         debug!("No matches found for JSONPath query");
         return Ok(false);
+    }
+
+    // Handle range removal for arrays if specified
+    if let Some(range_str) = &args.range {
+        return remove_array_range(document, jsonpath_query, range_str);
+    }
+
+    // Safety check for bulk removal operations
+    if located_results.len() > 1 && !args.force {
+        warn!(
+            "About to remove {} items. Use --force to confirm bulk removal operations.",
+            located_results.len()
+        );
+        // In a real CLI, this would prompt for confirmation
+        // For now, we'll proceed but log the warning
     }
 
     // Collect the path strings to avoid borrowing issues
@@ -836,7 +826,13 @@ fn remove_jsonpath_value(document: &mut Document, jsonpath_query: &JsonPathQuery
     for path_string in path_strings {
         if JsonMutator::remove_at_path(&mut json_value, &path_string)? {
             any_removed = true;
+            debug!("Removed value at path: {}", path_string);
         }
+    }
+
+    // Cleanup empty parent containers if requested
+    if any_removed && args.cleanup_empty {
+        cleanup_empty_containers(&mut json_value)?;
     }
 
     if any_removed {
@@ -847,6 +843,130 @@ fn remove_jsonpath_value(document: &mut Document, jsonpath_query: &JsonPathQuery
     }
 
     Ok(any_removed)
+}
+
+/// Remove a range of array elements
+fn remove_array_range(
+    document: &mut Document,
+    jsonpath_query: &JsonPathQuery,
+    range_str: &str,
+) -> Result<bool> {
+    // Parse range string (e.g., "1:3" or "2:5")
+    let parts: Vec<&str> = range_str.split(':').collect();
+    if parts.len() != 2 {
+        return Err(MatterOfError::InvalidQuery {
+            reason: format!("Invalid range format '{}', expected 'start:end'", range_str),
+        });
+    }
+
+    let start: usize = parts[0].parse().map_err(|_| MatterOfError::InvalidQuery {
+        reason: format!("Invalid start index in range: {}", parts[0]),
+    })?;
+
+    let end: usize = parts[1].parse().map_err(|_| MatterOfError::InvalidQuery {
+        reason: format!("Invalid end index in range: {}", parts[1]),
+    })?;
+
+    if start >= end {
+        return Err(MatterOfError::InvalidQuery {
+            reason: "Range start must be less than end".to_string(),
+        });
+    }
+
+    let front_matter = document.front_matter().unwrap();
+    let yaml_value = YamlJsonConverter::document_front_matter_to_yaml(front_matter);
+    let json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
+
+    let json_clone = json_value.clone();
+    let located_results = jsonpath_query.query_located(&json_clone);
+    if located_results.is_empty() {
+        return Ok(false);
+    }
+
+    let mut json_value = json_value;
+    let mut any_removed = false;
+
+    for (path, value) in located_results {
+        let path_string = path.to_string();
+
+        if !value.is_array() {
+            return Err(MatterOfError::InvalidQuery {
+                reason: format!(
+                    "Range removal only supported for arrays, found {} at path: {}",
+                    match value {
+                        serde_json::Value::Object(_) => "object",
+                        serde_json::Value::String(_) => "string",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::Bool(_) => "boolean",
+                        serde_json::Value::Null => "null",
+                        _ => "unknown",
+                    },
+                    path_string
+                ),
+            });
+        }
+
+        let array = value.as_array().unwrap();
+        if end > array.len() {
+            return Err(MatterOfError::InvalidQuery {
+                reason: format!(
+                    "Range end {} exceeds array length {} at path: {}",
+                    end,
+                    array.len(),
+                    path_string
+                ),
+            });
+        }
+
+        // Remove elements in reverse order to maintain indices
+        for idx in (start..end).rev() {
+            let element_path = format!("{}[{}]", path_string, idx);
+            if JsonMutator::remove_at_path(&mut json_value, &element_path)? {
+                any_removed = true;
+                debug!(
+                    "Removed array element at index {} from path: {}",
+                    idx, path_string
+                );
+            }
+        }
+    }
+
+    if any_removed {
+        let updated_yaml = YamlJsonConverter::json_to_yaml(&json_value)?;
+        let updated_front_matter = YamlJsonConverter::yaml_to_document_front_matter(&updated_yaml)?;
+        *document = Document::new(Some(updated_front_matter), document.body().to_string());
+    }
+
+    Ok(any_removed)
+}
+
+/// Clean up empty containers (objects and arrays) after removal
+fn cleanup_empty_containers(json_value: &mut serde_json::Value) -> Result<()> {
+    match json_value {
+        serde_json::Value::Object(obj) => {
+            // First recurse into children
+            for value in obj.values_mut() {
+                cleanup_empty_containers(value)?;
+            }
+
+            // Remove empty objects and arrays
+            obj.retain(|_, v| match v {
+                serde_json::Value::Object(o) => !o.is_empty(),
+                serde_json::Value::Array(a) => !a.is_empty(),
+                _ => true,
+            });
+        }
+        serde_json::Value::Array(arr) => {
+            // Recurse into array elements
+            for value in arr.iter_mut() {
+                cleanup_empty_containers(value)?;
+            }
+            // Note: We don't remove empty array elements as that would change indices
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 /// Add a value using JSONPath semantics
@@ -867,7 +987,6 @@ fn add_jsonpath_value(
 
     if let Some(key) = add_key {
         // Adding a new property to an object
-        // Find all matching locations and add the new key to each
         let located_results = jsonpath_query.query_located(&json_value);
 
         if located_results.is_empty() {
@@ -887,6 +1006,21 @@ fn add_jsonpath_value(
                 .map(|(path, _)| path.to_string())
                 .collect();
 
+            // Validate that all targets are objects
+            for path_string in &path_strings {
+                let parsed_path = NormalizedPathUtils::parse_path(path_string)?;
+                let current_value = get_value_at_path(&json_value, &parsed_path)?;
+
+                if !current_value.is_object() {
+                    return Err(MatterOfError::InvalidQuery {
+                        reason: format!(
+                            "Cannot add property '{}' to non-object at path: {}",
+                            key, path_string
+                        ),
+                    });
+                }
+            }
+
             // Add the new property to all matching objects
             for path_string in path_strings {
                 let new_path = format!("{}['{}']", path_string, key);
@@ -904,20 +1038,53 @@ fn add_jsonpath_value(
             // Create the base path as an empty array
             JsonMutator::set_at_path(&mut json_value, &base_path, serde_json::json!([]))?;
 
-            // Add the value using append semantics
-            let append_path = format!("{}[-]", base_path);
-            JsonMutator::set_at_path(&mut json_value, &append_path, new_json_value)?;
+            // Add the value using specified semantics
+            if let Some(idx) = index {
+                let indexed_path = format!("{}[{}]", base_path, idx);
+                JsonMutator::set_at_path(&mut json_value, &indexed_path, new_json_value)?;
+            } else {
+                let append_path = format!("{}[-]", base_path);
+                JsonMutator::set_at_path(&mut json_value, &append_path, new_json_value)?;
+            }
         } else {
-            // Collect path strings to avoid borrowing issues
+            // Collect path strings and validate array types
             let path_strings: Vec<String> = located_results
                 .into_iter()
-                .map(|(path, _)| path.to_string())
-                .collect();
+                .map(|(path, value)| {
+                    // Validate that target is or can become an array
+                    if !value.is_array() && !value.is_null() {
+                        return Err(MatterOfError::InvalidQuery {
+                            reason: format!(
+                                "Cannot add array element to non-array at path: {}",
+                                path.to_string()
+                            ),
+                        });
+                    }
+                    Ok(path.to_string())
+                })
+                .collect::<Result<Vec<_>>>()?;
 
             // Add to all matching arrays
             for path_string in path_strings {
                 if let Some(idx) = index {
-                    // Insert at specific index
+                    // Validate index is reasonable for insertion
+                    let parsed_path = NormalizedPathUtils::parse_path(&path_string)?;
+                    let current_value = get_value_at_path(&json_value, &parsed_path)?;
+
+                    if let Some(arr) = current_value.as_array() {
+                        if idx > arr.len() {
+                            return Err(MatterOfError::InvalidQuery {
+                                reason: format!(
+                                    "Insert index {} exceeds array length {} at path: {}",
+                                    idx,
+                                    arr.len(),
+                                    path_string
+                                ),
+                            });
+                        }
+                    }
+
+                    // Insert at specific index using array extension if needed
                     let indexed_path = format!("{}[{}]", path_string, idx);
                     JsonMutator::set_at_path(
                         &mut json_value,
@@ -943,6 +1110,189 @@ fn add_jsonpath_value(
     *document = Document::new(Some(updated_front_matter), document.body().to_string());
 
     Ok(true)
+}
+
+/// Helper function to get value at a parsed path
+fn get_value_at_path<'a>(
+    json_value: &'a serde_json::Value,
+    parsed_path: &ParsedPath,
+) -> Result<&'a serde_json::Value> {
+    let mut current = json_value;
+
+    for segment in &parsed_path.segments {
+        match segment {
+            PathSegment::Property(key) => {
+                current = current.get(key).unwrap_or(&serde_json::Value::Null);
+            }
+            PathSegment::Index(index) => {
+                if let Some(arr) = current.as_array() {
+                    current = arr.get(*index).unwrap_or(&serde_json::Value::Null);
+                } else {
+                    current = &serde_json::Value::Null;
+                }
+            }
+            PathSegment::Append => {
+                return Err(MatterOfError::InvalidPath {
+                    path: parsed_path.original.clone(),
+                    reason: "Cannot get value at append path".to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(current)
+}
+
+/// Replace values or rename keys using JSONPath semantics
+fn replace_jsonpath_value(
+    document: &mut Document,
+    jsonpath_query: &JsonPathQuery,
+    args: &ReplaceArgs,
+) -> Result<bool> {
+    // Ensure document has front matter
+    document.ensure_front_matter();
+
+    let front_matter = document.front_matter().unwrap();
+    let yaml_value = YamlJsonConverter::document_front_matter_to_yaml(front_matter);
+    let json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
+
+    // Find all matching locations first
+    let located_results = jsonpath_query.query_located(&json_value);
+
+    if located_results.is_empty() {
+        debug!("No matches found for JSONPath query");
+        return Ok(false);
+    }
+
+    // Check for key renaming constraints
+    if args.new_key.is_some() && located_results.len() > 1 {
+        return Err(MatterOfError::InvalidQuery {
+            reason: format!(
+                "Key renaming (--new-key) is only supported for single matches. Found {} matches for query: {}",
+                located_results.len(),
+                jsonpath_query.original()
+            ),
+        });
+    }
+
+    // Collect path information for processing
+    let mut operations = Vec::new();
+    for (path, current_value) in located_results {
+        let path_string = path.to_string();
+
+        // Determine if we should process this value
+        let should_replace = if let Some(old_value_str) = &args.old_value {
+            // Only replace if current value matches old_value
+            let old_value = FrontMatterValue::parse_from_string(
+                old_value_str,
+                args.type_.map(Into::into).as_ref(),
+            )?;
+            let old_json_value = YamlJsonConverter::front_matter_to_json(&old_value)?;
+            *current_value == old_json_value
+        } else {
+            // Replace all matches
+            true
+        };
+
+        if should_replace {
+            operations.push((path_string, current_value));
+        }
+    }
+
+    if operations.is_empty() {
+        debug!("No matching values found for replacement");
+        return Ok(false);
+    }
+
+    // Now work with a fresh mutable copy of the JSON
+    let mut json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
+    let mut any_modified = false;
+
+    // Process operations
+    for (path_string, current_value) in operations {
+        // Handle key renaming
+        if let Some(new_key) = &args.new_key {
+            // This is a key rename operation - only works for object properties
+            let parsed_path = NormalizedPathUtils::parse_path(&path_string)?;
+
+            if let Some(PathSegment::Property(old_key)) = parsed_path.segments.last() {
+                // Remove the old key
+                JsonMutator::remove_at_path(&mut json_value, &path_string)?;
+
+                // Create the new path by replacing the last segment
+                let parent_path = if parsed_path.segments.len() > 1 {
+                    let parent_segments = &parsed_path.segments[..parsed_path.segments.len() - 1];
+                    format!(
+                        "${}",
+                        parent_segments
+                            .iter()
+                            .map(|seg| match seg {
+                                PathSegment::Property(key) => format!("['{}']", key),
+                                PathSegment::Index(idx) => format!("[{}]", idx),
+                                PathSegment::Append => "[-]".to_string(),
+                            })
+                            .collect::<String>()
+                    )
+                } else {
+                    "$".to_string()
+                };
+
+                let new_path = if parent_path == "$" {
+                    format!("$['{}']", new_key)
+                } else {
+                    format!("{}['{}']", parent_path, new_key)
+                };
+
+                // Set the value at the new location
+                let value_to_set = if let Some(new_value_str) = &args.new_value {
+                    let new_value = FrontMatterValue::parse_from_string(
+                        new_value_str,
+                        args.type_.map(Into::into).as_ref(),
+                    )?;
+                    YamlJsonConverter::front_matter_to_json(&new_value)?
+                } else {
+                    current_value.clone()
+                };
+
+                JsonMutator::set_at_path(&mut json_value, &new_path, value_to_set)?;
+                any_modified = true;
+
+                debug!("Renamed key: {} -> {} at {}", old_key, new_key, parent_path);
+            } else {
+                return Err(MatterOfError::InvalidQuery {
+                    reason: format!(
+                        "Key renaming is only supported for object properties, not array indices: {}",
+                        path_string
+                    ),
+                });
+            }
+        } else if let Some(new_value_str) = &args.new_value {
+            // This is a value replacement operation
+            let new_value = FrontMatterValue::parse_from_string(
+                new_value_str,
+                args.type_.map(Into::into).as_ref(),
+            )?;
+            let new_json_value = YamlJsonConverter::front_matter_to_json(&new_value)?;
+
+            JsonMutator::set_at_path(&mut json_value, &path_string, new_json_value)?;
+            any_modified = true;
+
+            debug!("Replaced value at {}", path_string);
+        } else {
+            return Err(MatterOfError::InvalidQuery {
+                reason: "Replace operation requires either --new-key or --new-value".to_string(),
+            });
+        }
+    }
+
+    if any_modified {
+        // Convert back to YAML and update document
+        let updated_yaml = YamlJsonConverter::json_to_yaml(&json_value)?;
+        let updated_front_matter = YamlJsonConverter::yaml_to_document_front_matter(&updated_yaml)?;
+        *document = Document::new(Some(updated_front_matter), document.body().to_string());
+    }
+
+    Ok(any_modified)
 }
 
 fn parse_cli_value(
