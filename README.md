@@ -2,175 +2,263 @@
 
 > forked from [cdfmlr/smelt](https://github.com/cdfmlr/smelt). (they are different programs for different purpose: forked for reusing some initial code only)
 
-matterof is a commandline tool in help of reading/editing the YAML front-matters at the head of Markdown files.
+matterof is a commandline tool for reading and editing YAML front-matter in Markdown files using JSONPath queries.
 
-## Usage
+## Core Library API
 
-### Get
+The core library provides a clean, JSONPath-based API for working with front-matter:
 
+```rust
+use matterof::{Document, FrontMatterValue};
+
+// Load a document
+let doc = Document::from_file("example.md")?;
+
+// Query using JSONPath (auto-prepends "$." if needed)
+let title = doc.query("title")?;                    // Simple field
+let author_name = doc.query("author.name")?;        // Nested object
+let first_tag = doc.query("tags[0]")?;              // Array access
+let all_tags = doc.query("tags[*]")?;               // Wildcard
+let published_posts = doc.query("posts[?@.published]")?;  // Filter
+
+// Modify using JSONPath
+doc.set("title", FrontMatterValue::string("New Title"))?;
+doc.set("tags[0]", FrontMatterValue::string("rust"))?;
+doc.set("posts[?@.draft].published", FrontMatterValue::bool(true))?;
+
+// Save changes
+doc.write_to_file("example.md")?;
 ```
-# get all front-matter key-values, output as YAML
-matterof get --all <path/to/file.md>
 
-# get specific key-values
-matterof get --key=key <file>
+## CLI Usage
 
-# nested keys with dot notation
-matterof get --key=parent.child.key <file>
-# notice when a key contains dots, it should be quoted
-matterof get --key='"parent.with.dots"."child.key"' <file>
-# or use parenthesis notation
-matterof get --key='parent["with.dots"]["child.key"]' <file>
-# or use a list of --key-part flags
-matterof get --key-part=parent.with.dots --key-part=child.key <file>
-# --key-part comma,separated is supported too, but not recommended due to ambiguity
+All commands use [JSONPath](https://tools.ietf.org/rfc/rfc9535.txt) syntax for powerful querying and modification. Simple paths are automatically prefixed with `$.` for convenience.
 
-# get multiple key-values
-matterof get --key=key1,key2,... <file>
-# or repeat the flag
-matterof get --key=key1 --key=key2 ... <file>
+### Query
 
-# regular expression to match keys
-matterof get --key-regex='^key_prefix_.*' <file>
+```bash
+# Get all front-matter
+matterof get --all file.md
 
-# to use regex for nested keys, use --key-part-regex flags is highly recommended for better clarity
-matterof get --key-part='parent' --key-part-regex='^child_.*' <file>
-# or (NOT RECOMMENDED AT ALL) you can still use dot notation or parenthesis notation flags as above with careful escaping
-matterof get --key-regex='^parent\.child\..*' <file> # the escaped dot is considered as the key level separator
-matterof get --key-regex='^parent\["child"\]\..*' <file>
+# Simple field access (auto-prepends "$.")
+matterof get --query "title" file.md
+matterof get --key "title" file.md              # alias for --query
+matterof get --jsonpath "title" file.md         # explicit JSONPath syntax
 
-# regular expression to match values
-matterof get --key=key1 --value-regex='^value_prefix_.*' <file>
-# when both key-regex and value-regex are provided, only key-values matching both are returned
+# Nested object access  
+matterof get --query "author.name" file.md
 
-# multiple files, output as YAML mapping from file names to key-values
-matterof get --key=key <file1> <file2> ...
-## example output:
-## file1.md:
-##   key: value
-## file2.md:
-##   key: value
+# Array access
+matterof get --query "tags[0]" file.md          # first tag
+matterof get --query "tags[*]" file.md          # all tags
+matterof get --query "tags[1:3]" file.md        # slice: tags 1-2
+
+# Advanced filtering
+matterof get --query "posts[?@.published]" file.md                    # published posts
+matterof get --query "books[?@.price > 10].title" file.md             # expensive book titles
+matterof get --query "authors[?search(@.name, 'John')]" file.md       # authors named John
+
+# Recursive search
+matterof get --query "$..author" file.md        # all "author" fields recursively
+
+# Multiple files (output as YAML mapping)
+matterof get --query "title" file1.md file2.md
+
+# Output formats
+matterof get --query "tags[*]" --format yaml file.md      # default YAML
+matterof get --query "tags[*]" --format json file.md      # JSON array
+matterof get --query "tags[*]" --format internal file.md  # Normalized Paths (RFC 9535 §2.7): path: value
 ```
 
 ### Set
 
+```bash
+# Simple assignment
+matterof set --query "title" --value "New Title" file.md
+
+# Nested object creation (creates parents as needed)
+matterof set --query "author.name" --value "John Doe" file.md
+
+# Array operations
+matterof set --query "tags[0]" --value "rust" file.md
+matterof set --query "tags[-1]" --value "new-tag" file.md    # append to end
+
+# Bulk operations (sets ALL matches)
+matterof set --query "posts[*].published" --value true file.md
+matterof set --query "books[?@.draft].status" --value "review" file.md
+
+# Type specification
+matterof set --query "count" --value "42" --type int file.md
+matterof set --query "price" --value "19.99" --type float file.md
+matterof set --query "enabled" --value "true" --type bool file.md
+
+# Multiple files
+matterof set --query "version" --value "2.0" file1.md file2.md
 ```
-# the value defaults to string
-matterof set --key=key --value=value <file>
-# nested keys with dot notation, parenthesis notation, or --key-part flags are supported as in 'get' command, creating parent keys if not exist (like mkdir -p)
 
-# specify value type
-matterof set --key=key --type=string|int|float|bool --value=value <file>
+### Add
 
-# add multiple values as a list
-matterof set --key=key --value=value1,value2,... <file>
-# or repeat the flag
-matterof set --key=key --value=value1 --value=value2 ... <file>
+```bash
+# Append to arrays
+matterof add --query "tags" --value "new-tag" file.md
 
-# multiple files: set the same key-value pair in all files
-matterof set --key=key --value=value <file1> <file2> ...
+# Insert at specific position
+matterof add --query "tags" --value "first-tag" --index 0 file.md
 
-# multiple keys: set the same value for multiple keys
-matterof set --key=key1,key2,... --value=value <file>
-# fuzzy key matching with regex
-matterof set --key-regex='^key_prefix_.*' --value=value <file>
-
-# append a value to a list/mapping
-matterof add --key=key --value=value <file>
-
-# insert a value to a list at specific index (0-based)
-matterof add --key=key --index=N --value=value <file>
+# Add to objects
+matterof add --query "author" --key "email" --value "john@example.com" file.md
 ```
 
 ### Remove
 
-```
-# remove specific key
-matterof rm --key=key <file>
-# nested keys with dot notation, parenthesis notation, or --key-part flags are supported as in 'get' command
+```bash
+# Remove fields
+matterof rm --query "draft" file.md
+matterof rm --query "author.email" file.md
 
-# remove a value from a list/mapping
-matterof rm --key=key --value=value <file>
+# Remove array elements
+matterof rm --query "tags[0]" file.md           # remove first tag
+matterof rm --query "tags[?@ == 'draft']" file.md    # remove "draft" tags
 
-# multiple files: remove the same key in all files
-matterof rm --key=key <file1> <file2> ...
+# Bulk removal
+matterof rm --query "posts[?@.archived]" file.md     # remove archived posts
 
-# regex to match keys
-matterof rm --key-regex='^key_prefix_.*' <file>
-# regex to match values
-matterof rm --key=key --value-regex='^value_prefix_.*' <file>
-# when both key-regex and value-regex are provided, only key-values matching both are removed
-
-# remove the entire front-matter
-matterof rm --all <file>
+# Remove entire front-matter
+matterof rm --all file.md
 ```
 
 ### Replace
 
-```
-# rename a key (in the same level)
-matterof replace --key=old_key --new-key=new_key <file>
-# to rename nested keys, use dot notation, parenthesis notation, or --key-part flags as in 'get' command, the last part is considered as the key name to be changed
-matterof replace --key-part=parent --key-part=old_key --new-key=new_key <file>
+```bash
+# Rename keys (only works when JSONPath matches exactly one location)
+matterof replace --query "old_key" --new-key "new_key" file.md
+matterof replace --query "author.old_field" --new-key "new_field" file.md
 
-# moving a key to a different parent with --new-key-part, it creates the new parents if not exist (like mkdir -p)
-matterof replace --key-part=old_parent --key-part=old_key --new-key-part=new_parent --new-key=new_key <file>
-# or (NOT RECOMMENDED) using dot notation / parenthesis notation with careful double checking:
-matterof replace --key=old_parent.old_key --new-key=new_parent.new_key <file>
+# Replace values
+matterof replace --query "status" --old-value "draft" --new-value "published" file.md
 
-# replace value for specific key: alias of 'set'
-matterof replace --key=key [--type=?] --value=new_value <file>
-
-# replace a value in a list/mapping
-matterof replace --key=key --old-value=old_value --new-value=new_value <file>
-# comman-separated / repeat-flag multiple old/new values are not supported here
-
-# regex to match keys/values
-matterof replace --key-regex='^key_prefix_.*' --old-value-regex='^old_value_prefix_.*' --new-value=new_value <file>
+# Bulk replace with filtering
+matterof replace --query "posts[?@.status == 'draft'].status" --value "review" file.md
 ```
 
-### Dry-run, Backup and Output Options
+### Query Analysis
 
-By default, the commands that modify files (set, rm, replace) will directly change the files in-place. You can use the following options for safer operations:
+```bash
+# Show matching Normalized Paths only (RFC 9535 §2.7, useful for scripting)
+matterof query --query "books[*].author" file.md
+matterof query --key "books[*].author" file.md        # alias
+matterof query --jsonpath "books[*].author" file.md   # explicit
+# Output:
+# $['books'][0]['author']
+# $['books'][1]['author']
 
+# Count matches
+matterof query --count --query "posts[?@.published]" file.md
+# Output: 5
+
+# Check existence
+matterof query --exists --query "author.email" file.md
+# Exit code: 0 if exists, 1 if not
+
+# Show query results with Normalized Paths (RFC 9535 §2.7)
+matterof query --with-values --query "tags[*]" file.md
+# Output:
+# $['tags'][0]: rust
+# $['tags'][1]: cli
 ```
-# preview changes without modifying files: output a unified diff (diff -u) to stdout
-matterof [get|set|rm|replace] --dry-run ...
 
-# create a backup copy of each modified file with suffix:
-matterof [set|rm|replace] --backup-suffix='.bak' ...
+### File Safety Options
 
-# create a backup copy of each modified file to a specific directory, preserving the original file names and relative paths
-matterof [set|rm|replace] --backup-dir='/path/to/backup/dir' ...
+```bash
+# Preview changes (show diff without modifying)
+matterof set --query "title" --value "New" --dry-run file.md
 
-# output the modified content to stdout instead of writing back to the file (only available when modifying a single file)
-matterof [set|rm|replace] --stdout ...
+# Create backups
+matterof set --query "title" --value "New" --backup-suffix ".bak" file.md
+matterof set --query "title" --value "New" --backup-dir "./backups" file.md
 
-# output the modified files to a specific directory, preserving the original file names and relative paths
-matterof [set|rm|replace] --output-dir='/path/to/dir' ...
+# Output to different location
+matterof set --query "title" --value "New" --output-dir "./modified" file.md
+matterof set --query "title" --value "New" --stdout file.md    # single file only
+
+# Atomic operations (default: true)
+matterof set --query "title" --value "New" --no-atomic file.md
 ```
 
-### Chore
+### Utility Commands
 
+```bash
+# Initialize empty front-matter
+matterof init file.md
+
+# Clean empty front-matter
+matterof clean file.md
+
+# Validate syntax
+matterof validate file.md
+
+# Format/prettify front-matter
+matterof fmt file.md
+
+# Help
+matterof help
+matterof help get
+matterof get --help
 ```
-# initialize front-matter if not exists
-matterof init <file>
 
-# remove front-matter if empty
-matterof clean <file>
+## JSONPath Syntax Quick Reference
 
-# validate front-matter syntax
-matterof validate <file>
+| Pattern | Description | Example |
+|---------|-------------|---------|
+| `title` | Root field (auto: `$.title`) | `"Hello World"` |
+| `author.name` | Nested field | `"John Doe"` |
+| `tags[0]` | Array index | `"rust"` |
+| `tags[*]` | All array elements | `["rust", "cli"]` |
+| `tags[1:3]` | Array slice | `["cli", "yaml"]` |
+| `tags[-1]` | Last element | `"yaml"` |
+| `books[?@.published]` | Filter by condition | Published books |
+| `books[?@.price > 10]` | Numeric filter | Expensive books |
+| `authors[?search(@.name, 'John')]` | Text search | Authors with "John" |
+| `$..author` | Recursive search | All author fields |
 
-# format front-matter (sort keys, consistent indentation, etc.)
-matterof fmt <file>
+For complete JSONPath syntax, see [RFC 9535](https://tools.ietf.org/rfc/rfc9535.txt).
 
-# show help
-matterof help  # or matterof --help
-matterof help <command>  # or matterof <command> --help
+## Installation
 
-# show version
-matterof version  # or matterof --version
+```bash
+# From source
+cargo install --git https://github.com/your-repo/matterof
+
+# From crates.io (coming soon)
+cargo install matterof
+```
+
+## Examples
+
+### Blog Post Management
+
+```bash
+# Set all drafts to published
+matterof set --query "posts[?@.status == 'draft'].status" --value "published" *.md
+
+# Add publication date to all posts missing it
+matterof set --query "posts[?!@.date].date" --value "2024-01-01" *.md
+
+# Get all post titles
+matterof get --query "posts[*].title" --format json blog/*.md
+```
+
+### Book Catalog
+
+```bash
+# Find expensive programming books
+matterof get --query "books[?@.category == 'programming' && @.price > 50]" catalog.md
+
+# Update all book prices by 10%
+matterof replace --query "books[*].price" --transform "@ * 1.1" catalog.md
+
+# Add ISBN to books that don't have one
+matterof set --query "books[?!@.isbn].isbn" --value "TBD" catalog.md
 ```
 
 ## License
