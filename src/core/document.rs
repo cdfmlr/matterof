@@ -293,6 +293,23 @@ impl Document {
             Some(value.clone())
         } else if let Some(nested_map) = value.as_object() {
             self.get_nested_value(&nested_map, &path[1..])
+        } else if let Some(array) = value.as_array() {
+            // Handle array indexing
+            if let Ok(index) = path[1].parse::<usize>() {
+                if let Some(array_value) = array.get(index) {
+                    if path.len() == 2 {
+                        Some(array_value.clone())
+                    } else if let Some(nested_map) = array_value.as_object() {
+                        self.get_nested_value(&nested_map, &path[2..])
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -315,8 +332,51 @@ impl Document {
             return Ok(());
         }
 
-        // Ensure intermediate path exists
         let key = &path[0];
+
+        // Check if the next segment is a numeric index (array access)
+        if path.len() >= 2 {
+            if let Ok(index) = path[1].parse::<usize>() {
+                // We're dealing with array indexing
+                let mut array = if let Some(existing_value) = container.get(key) {
+                    if let Some(existing_array) = existing_value.as_array() {
+                        existing_array
+                    } else {
+                        // Current value is not an array, create a new one
+                        Vec::new()
+                    }
+                } else {
+                    // No existing value, create new array
+                    Vec::new()
+                };
+
+                // Extend array if necessary
+                while array.len() <= index {
+                    array.push(FrontMatterValue::null());
+                }
+
+                if path.len() == 2 {
+                    // Set the array element directly
+                    array[index] = value;
+                } else {
+                    // Need to set nested value within the array element
+                    let element_value = if array[index].is_object() {
+                        array[index].as_object().unwrap()
+                    } else {
+                        BTreeMap::new()
+                    };
+
+                    let mut nested_map = element_value;
+                    Self::set_nested_value_static(&mut nested_map, &path[2..], value)?;
+                    array[index] = FrontMatterValue::object(nested_map);
+                }
+
+                container.insert(key.clone(), FrontMatterValue::array(array));
+                return Ok(());
+            }
+        }
+
+        // Handle object path (original logic)
         if !container.contains_key(key) {
             container.insert(key.clone(), FrontMatterValue::object(BTreeMap::new()));
         }
@@ -385,6 +445,21 @@ impl Document {
             // Recurse into nested objects
             if let Some(nested_map) = value.as_object() {
                 self.query_recursive(&nested_map, &key_path, query, result);
+            } else if let Some(array) = value.as_array() {
+                // Handle array elements with numeric indices
+                for (index, array_value) in array.iter().enumerate() {
+                    let array_key_path = key_path.child(&index.to_string());
+
+                    // Test this array element
+                    if query.matches(&array_key_path, array_value) {
+                        result.add_match(array_key_path.clone(), array_value.clone());
+                    }
+
+                    // Recurse into nested objects within arrays
+                    if let Some(nested_map) = array_value.as_object() {
+                        self.query_recursive(&nested_map, &array_key_path, query, result);
+                    }
+                }
             }
         }
     }
@@ -401,6 +476,17 @@ impl Document {
 
             if let Some(nested_map) = value.as_object() {
                 self.flatten_recursive(&nested_map, &key_path, result);
+            } else if let Some(array) = value.as_array() {
+                // Flatten array elements with numeric indices
+                for (index, array_value) in array.iter().enumerate() {
+                    let array_key_path = key_path.child(&index.to_string());
+                    result.insert(array_key_path.clone(), array_value.clone());
+
+                    // Recursively flatten nested objects within arrays
+                    if let Some(nested_map) = array_value.as_object() {
+                        self.flatten_recursive(&nested_map, &array_key_path, result);
+                    }
+                }
             }
         }
     }
@@ -614,5 +700,283 @@ mod tests {
         assert!(flattened.contains_key(&KeyPath::parse("author").unwrap()));
         assert!(flattened.contains_key(&KeyPath::parse("author.name").unwrap()));
         assert!(flattened.contains_key(&KeyPath::parse("author.email").unwrap()));
+    }
+
+    #[test]
+    fn test_array_indexing() {
+        let mut doc = Document::empty();
+
+        // Set up an array structure
+        let tags = FrontMatterValue::array(vec![
+            FrontMatterValue::string("rust"),
+            FrontMatterValue::string("cli"),
+            FrontMatterValue::string("yaml"),
+        ]);
+        doc.set(&KeyPath::parse("tags").unwrap(), tags).unwrap();
+
+        // Set up nested array of objects
+        let authors = FrontMatterValue::array(vec![
+            FrontMatterValue::object({
+                let mut obj = std::collections::BTreeMap::new();
+                obj.insert("name".to_string(), FrontMatterValue::string("John Doe"));
+                obj.insert(
+                    "email".to_string(),
+                    FrontMatterValue::string("john@example.com"),
+                );
+                obj
+            }),
+            FrontMatterValue::object({
+                let mut obj = std::collections::BTreeMap::new();
+                obj.insert("name".to_string(), FrontMatterValue::string("Jane Smith"));
+                obj.insert(
+                    "email".to_string(),
+                    FrontMatterValue::string("jane@example.com"),
+                );
+                obj
+            }),
+        ]);
+        doc.set(&KeyPath::parse("authors").unwrap(), authors)
+            .unwrap();
+
+        // Test array indexing
+        let first_tag = doc.get(&KeyPath::parse("tags.0").unwrap());
+        assert!(first_tag.is_some());
+        assert_eq!(first_tag.unwrap().as_string(), Some("rust"));
+
+        let second_tag = doc.get(&KeyPath::parse("tags.1").unwrap());
+        assert!(second_tag.is_some());
+        assert_eq!(second_tag.unwrap().as_string(), Some("cli"));
+
+        // Test nested array access
+        let first_author_name = doc.get(&KeyPath::parse("authors.0.name").unwrap());
+        assert!(first_author_name.is_some());
+        assert_eq!(first_author_name.unwrap().as_string(), Some("John Doe"));
+
+        let second_author_email = doc.get(&KeyPath::parse("authors.1.email").unwrap());
+        assert!(second_author_email.is_some());
+        assert_eq!(
+            second_author_email.unwrap().as_string(),
+            Some("jane@example.com")
+        );
+
+        // Test out of bounds access
+        let out_of_bounds = doc.get(&KeyPath::parse("tags.10").unwrap());
+        assert!(out_of_bounds.is_none());
+
+        // Test invalid index
+        let invalid_index = doc.get(&KeyPath::parse("tags.invalid").unwrap());
+        assert!(invalid_index.is_none());
+    }
+
+    #[test]
+    fn test_array_flattening() {
+        let mut doc = Document::empty();
+
+        // Set up an array structure
+        let tags = FrontMatterValue::array(vec![
+            FrontMatterValue::string("rust"),
+            FrontMatterValue::string("cli"),
+        ]);
+        doc.set(&KeyPath::parse("tags").unwrap(), tags).unwrap();
+
+        // Test that flattened structure includes array indices
+        let flattened = doc.flatten();
+
+        // Should have keys: tags, tags.0, tags.1
+        assert!(flattened.contains_key(&KeyPath::parse("tags").unwrap()));
+        assert!(flattened.contains_key(&KeyPath::parse("tags.0").unwrap()));
+        assert!(flattened.contains_key(&KeyPath::parse("tags.1").unwrap()));
+
+        // Verify values
+        let tag0 = flattened.get(&KeyPath::parse("tags.0").unwrap()).unwrap();
+        assert_eq!(tag0.as_string(), Some("rust"));
+
+        let tag1 = flattened.get(&KeyPath::parse("tags.1").unwrap()).unwrap();
+        assert_eq!(tag1.as_string(), Some("cli"));
+    }
+
+    #[test]
+    fn test_array_set_indexing() {
+        let mut doc = Document::empty();
+
+        // Test setting array elements by index - should create array
+        doc.set(
+            &KeyPath::parse("tags.0").unwrap(),
+            FrontMatterValue::string("rust"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("tags.1").unwrap(),
+            FrontMatterValue::string("cli"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("tags.2").unwrap(),
+            FrontMatterValue::string("yaml"),
+        )
+        .unwrap();
+
+        // Verify array was created correctly
+        let tags = doc.get(&KeyPath::parse("tags").unwrap()).unwrap();
+        assert!(tags.is_array());
+        let tags_array = tags.as_array().unwrap();
+        assert_eq!(tags_array.len(), 3);
+        assert_eq!(tags_array[0].as_string(), Some("rust"));
+        assert_eq!(tags_array[1].as_string(), Some("cli"));
+        assert_eq!(tags_array[2].as_string(), Some("yaml"));
+
+        // Test setting at non-consecutive index (should fill with nulls)
+        doc.set(
+            &KeyPath::parse("numbers.5").unwrap(),
+            FrontMatterValue::int(42),
+        )
+        .unwrap();
+        let numbers = doc.get(&KeyPath::parse("numbers").unwrap()).unwrap();
+        assert!(numbers.is_array());
+        let numbers_array = numbers.as_array().unwrap();
+        assert_eq!(numbers_array.len(), 6);
+        assert!(numbers_array[0].is_null());
+        assert!(numbers_array[4].is_null());
+        assert_eq!(numbers_array[5].as_int(), Some(42));
+
+        // Test setting nested object in array
+        doc.set(
+            &KeyPath::parse("authors.0.name").unwrap(),
+            FrontMatterValue::string("John Doe"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("authors.0.email").unwrap(),
+            FrontMatterValue::string("john@example.com"),
+        )
+        .unwrap();
+
+        let author_name = doc.get(&KeyPath::parse("authors.0.name").unwrap()).unwrap();
+        assert_eq!(author_name.as_string(), Some("John Doe"));
+        let author_email = doc
+            .get(&KeyPath::parse("authors.0.email").unwrap())
+            .unwrap();
+        assert_eq!(author_email.as_string(), Some("john@example.com"));
+    }
+
+    #[test]
+    fn test_debug_flattened_keys() {
+        let mut doc = Document::empty();
+
+        // Set up test data
+        doc.set(
+            &KeyPath::parse("title").unwrap(),
+            FrontMatterValue::string("Test Document"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("author.name").unwrap(),
+            FrontMatterValue::string("John Doe"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("author.email").unwrap(),
+            FrontMatterValue::string("john@example.com"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("tags.0").unwrap(),
+            FrontMatterValue::string("rust"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("tags.1").unwrap(),
+            FrontMatterValue::string("cli"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("tags.2").unwrap(),
+            FrontMatterValue::string("yaml"),
+        )
+        .unwrap();
+
+        // Check flattened structure
+        let flattened = doc.flatten();
+        println!("Flattened keys:");
+        for key in flattened.keys() {
+            println!("  {}", key);
+        }
+
+        // Test hierarchical query for tags.1
+        let hierarchical_query = Query::key("tags.1");
+        let hierarchical_result = doc.query(&hierarchical_query);
+        println!(
+            "Hierarchical query 'tags.1' matches: {}",
+            hierarchical_result.len()
+        );
+        for (key, value) in hierarchical_result.matches() {
+            println!("  {} = {}", key, value.to_string_representation());
+        }
+
+        // Test exact query for tags.1
+        let exact_query = Query::exact_key("tags.1");
+        let exact_result = doc.query(&exact_query);
+        println!("Exact query 'tags.1' matches: {}", exact_result.len());
+        for (key, value) in exact_result.matches() {
+            println!("  {} = {}", key, value.to_string_representation());
+        }
+
+        // Verify flattened structure includes array indices
+        assert!(flattened.contains_key(&KeyPath::parse("tags.0").unwrap()));
+        assert!(flattened.contains_key(&KeyPath::parse("tags.1").unwrap()));
+        assert!(flattened.contains_key(&KeyPath::parse("tags.2").unwrap()));
+    }
+
+    #[test]
+    fn test_array_index_reconstruction() {
+        let mut doc = Document::empty();
+
+        // Set up test data with arrays
+        doc.set(
+            &KeyPath::parse("tags.0").unwrap(),
+            FrontMatterValue::string("rust"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("tags.1").unwrap(),
+            FrontMatterValue::string("cli"),
+        )
+        .unwrap();
+        doc.set(
+            &KeyPath::parse("tags.2").unwrap(),
+            FrontMatterValue::string("yaml"),
+        )
+        .unwrap();
+
+        // Query multiple array elements (should reconstruct as proper array, not object with string keys)
+        let query = Query::key_regex("^tags\\.[0-9]+$").unwrap();
+        let result = doc.query(&query);
+
+        println!("Query result matches: {}", result.len());
+        for (key, value) in result.matches() {
+            println!("  {} = {}", key, value.to_string_representation());
+        }
+
+        // Convert to YAML to check structure
+        let yaml_value = result.to_yaml_value();
+        println!("Reconstructed YAML: {:#?}", yaml_value);
+
+        // Test that the reconstructed structure is a proper array, not an object with string keys
+        if let serde_yaml::Value::Mapping(map) = yaml_value {
+            if let Some(tags_value) = map.get(&serde_yaml::Value::String("tags".to_string())) {
+                // Should be a sequence, not a mapping
+                assert!(matches!(tags_value, serde_yaml::Value::Sequence(_)));
+                if let serde_yaml::Value::Sequence(seq) = tags_value {
+                    assert_eq!(seq.len(), 3);
+                    assert_eq!(seq[0], serde_yaml::Value::String("rust".to_string()));
+                    assert_eq!(seq[1], serde_yaml::Value::String("cli".to_string()));
+                    assert_eq!(seq[2], serde_yaml::Value::String("yaml".to_string()));
+                }
+            } else {
+                panic!("Expected 'tags' key in result");
+            }
+        } else {
+            panic!("Expected mapping in result");
+        }
     }
 }

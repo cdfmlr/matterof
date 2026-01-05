@@ -171,8 +171,8 @@ fn test_complex_nested_operations() {
 
     let feature_query = Query::key("config.features");
     let feature_result = document.query(&feature_query);
-    // Hierarchical matching returns config, config.features, config.features.enabled, config.features.modules
-    assert_eq!(feature_result.len(), 4);
+    // Hierarchical matching returns config, config.features, config.features.enabled, config.features.modules, config.features.modules.0, config.features.modules.1
+    assert_eq!(feature_result.len(), 6);
 
     // Test removal of nested keys
     document

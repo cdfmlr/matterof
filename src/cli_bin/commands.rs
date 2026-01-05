@@ -630,7 +630,11 @@ fn build_query_from_get_args(args: &GetArgs) -> Result<Query> {
     if !args.key.is_empty() {
         let key_paths: Result<Vec<KeyPath>> = args.key.iter().map(|k| KeyPath::parse(k)).collect();
         for key_path in key_paths? {
-            query = query.and_key(key_path);
+            if args.exact {
+                query = query.and_exact_key(key_path);
+            } else {
+                query = query.and_key(key_path);
+            }
             has_conditions = true;
         }
     }
@@ -638,7 +642,11 @@ fn build_query_from_get_args(args: &GetArgs) -> Result<Query> {
     // Add key part conditions
     if !args.key_part.is_empty() {
         let key_path = KeyPath::from_segments(args.key_part.clone());
-        query = query.and_key(key_path);
+        if args.exact {
+            query = query.and_exact_key(key_path);
+        } else {
+            query = query.and_key(key_path);
+        }
         has_conditions = true;
     }
 

@@ -144,6 +144,10 @@ pub struct GetArgs {
     #[arg(long = "key-regex", value_name = "REGEX")]
     pub key_regex: Option<String>,
 
+    /// Use exact key matching instead of hierarchical matching
+    #[arg(long)]
+    pub exact: bool,
+
     /// Regular expression to match key parts in nested paths
     #[arg(long = "key-part-regex", value_name = "REGEX")]
     pub key_part_regex: Vec<String>,

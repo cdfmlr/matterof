@@ -27,8 +27,10 @@ pub enum CombineMode {
 pub enum QueryCondition {
     /// Select all keys
     All,
-    /// Match specific key paths
+    /// Match specific key paths (hierarchical matching)
     KeyPaths(Vec<KeyPath>),
+    /// Match specific key paths exactly (no hierarchical matching)
+    ExactKeyPaths(Vec<KeyPath>),
     /// Match keys using regex
     KeyRegex(Regex),
     /// Match values exactly
@@ -52,6 +54,7 @@ impl std::fmt::Debug for QueryCondition {
         match self {
             Self::All => write!(f, "All"),
             Self::KeyPaths(paths) => f.debug_tuple("KeyPaths").field(paths).finish(),
+            Self::ExactKeyPaths(paths) => f.debug_tuple("ExactKeyPaths").field(paths).finish(),
             Self::KeyRegex(regex) => f.debug_tuple("KeyRegex").field(regex).finish(),
             Self::ValueExact(value) => f.debug_tuple("ValueExact").field(value).finish(),
             Self::ValueRegex(regex) => f.debug_tuple("ValueRegex").field(regex).finish(),
@@ -69,6 +72,7 @@ impl Clone for QueryCondition {
         match self {
             Self::All => Self::All,
             Self::KeyPaths(paths) => Self::KeyPaths(paths.clone()),
+            Self::ExactKeyPaths(paths) => Self::ExactKeyPaths(paths.clone()),
             Self::KeyRegex(regex) => Self::KeyRegex(regex.clone()),
             Self::ValueExact(value) => Self::ValueExact(value.clone()),
             Self::ValueRegex(regex) => Self::ValueRegex(regex.clone()),
@@ -127,6 +131,25 @@ impl Query {
     /// Create a query for a single key path
     pub fn key<K: Into<KeyPath>>(key: K) -> Self {
         Self::keys(vec![key.into()])
+    }
+
+    /// Create a query for exact key matches (no hierarchical matching)
+    pub fn exact_keys<I, K>(keys: I) -> Self
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<KeyPath>,
+    {
+        let mut query = Self::new();
+        let key_paths: Vec<KeyPath> = keys.into_iter().map(|k| k.into()).collect();
+        query
+            .conditions
+            .push(QueryCondition::ExactKeyPaths(key_paths));
+        query
+    }
+
+    /// Create a query for a single exact key path (no hierarchical matching)
+    pub fn exact_key<K: Into<KeyPath>>(key: K) -> Self {
+        Self::exact_keys(vec![key.into()])
     }
 
     /// Create a query using key regex
@@ -193,6 +216,13 @@ impl Query {
     pub fn and_key<K: Into<KeyPath>>(mut self, key: K) -> Self {
         self.conditions
             .push(QueryCondition::KeyPaths(vec![key.into()]));
+        self
+    }
+
+    /// Add an exact key condition (no hierarchical matching)
+    pub fn and_exact_key<K: Into<KeyPath>>(mut self, key: K) -> Self {
+        self.conditions
+            .push(QueryCondition::ExactKeyPaths(vec![key.into()]));
         self
     }
 
@@ -288,6 +318,7 @@ impl Query {
             QueryCondition::KeyPaths(paths) => paths
                 .iter()
                 .any(|path| key_path.starts_with(path) || path.starts_with(key_path)),
+            QueryCondition::ExactKeyPaths(paths) => paths.iter().any(|path| key_path == path),
             QueryCondition::KeyRegex(regex) => regex.is_match(&key_path.to_dot_notation()),
             QueryCondition::ValueExact(expected) => value.as_inner() == expected.as_inner(),
             QueryCondition::ValueRegex(regex) => regex.is_match(&value.to_string_representation()),
@@ -408,12 +439,10 @@ impl QueryResult {
             return serde_yaml::Value::Null;
         }
 
-        // If there's only one match and it's a root-level key, return just the value
+        // If there's only one match, return just the value (not wrapped in structure)
         if self.matches.len() == 1 {
-            let (key_path, value) = self.matches.iter().next().unwrap();
-            if key_path.len() == 1 {
-                return value.as_inner().clone();
-            }
+            let (_, value) = self.matches.iter().next().unwrap();
+            return value.as_inner().clone();
         }
 
         // Build a nested structure
@@ -451,7 +480,38 @@ fn insert_nested_value(
 
     let key = serde_yaml::Value::String(path_segments[0].clone());
 
-    // Ensure the intermediate mapping exists
+    // Check if the next segment is a numeric index (array access)
+    if path_segments.len() >= 2 {
+        if let Ok(index) = path_segments[1].parse::<usize>() {
+            // We need to create/ensure an array exists
+            if !root.contains_key(&key) {
+                root.insert(key.clone(), serde_yaml::Value::Sequence(vec![]));
+            }
+
+            if let Some(serde_yaml::Value::Sequence(array)) = root.get_mut(&key) {
+                // Extend array if necessary
+                while array.len() <= index {
+                    array.push(serde_yaml::Value::Null);
+                }
+
+                if path_segments.len() == 2 {
+                    // Set the array element directly
+                    array[index] = value;
+                } else {
+                    // Need to set nested value within array element
+                    if !matches!(array[index], serde_yaml::Value::Mapping(_)) {
+                        array[index] = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+                    }
+                    if let serde_yaml::Value::Mapping(nested_map) = &mut array[index] {
+                        insert_nested_value(nested_map, &path_segments[2..], value);
+                    }
+                }
+                return;
+            }
+        }
+    }
+
+    // Handle object path (original logic)
     if !root.contains_key(&key) {
         root.insert(
             key.clone(),
@@ -654,5 +714,54 @@ mod tests {
         assert!(map
             .get(&serde_yaml::Value::String("author".to_string()))
             .is_some());
+    }
+
+    #[test]
+    fn test_query_exact_key_matching() {
+        use crate::core::path::KeyPath;
+        use crate::core::value::FrontMatterValue;
+
+        // Test hierarchical matching (default behavior)
+        let hierarchical_query = Query::key("tags.0");
+        let tags_path = KeyPath::parse("tags").unwrap();
+        let tags_0_path = KeyPath::parse("tags.0").unwrap();
+        let value = FrontMatterValue::string("test");
+
+        // Hierarchical matching should match both parent and child
+        assert!(hierarchical_query.matches(&tags_path, &value)); // "tags" matches because "tags.0" starts with "tags"
+        assert!(hierarchical_query.matches(&tags_0_path, &value)); // "tags.0" matches exactly
+
+        // Test exact matching (no hierarchical behavior)
+        let exact_query = Query::exact_key("tags.0");
+
+        // Exact matching should only match the exact path
+        assert!(!exact_query.matches(&tags_path, &value)); // "tags" should not match
+        assert!(exact_query.matches(&tags_0_path, &value)); // "tags.0" should match exactly
+
+        // Test with multiple exact keys
+        let multi_exact_query = Query::exact_keys(vec!["tags.0", "tags.1"]);
+        let tags_1_path = KeyPath::parse("tags.1").unwrap();
+
+        assert!(!multi_exact_query.matches(&tags_path, &value)); // "tags" should not match
+        assert!(multi_exact_query.matches(&tags_0_path, &value)); // "tags.0" should match
+        assert!(multi_exact_query.matches(&tags_1_path, &value)); // "tags.1" should match
+
+        // Test single exact key queries separately
+        let author_name_query = Query::exact_key("author.name");
+        let author_email_query = Query::exact_key("author.email");
+
+        let author_path = KeyPath::parse("author").unwrap();
+        let author_name_path = KeyPath::parse("author.name").unwrap();
+        let author_email_path = KeyPath::parse("author.email").unwrap();
+
+        // Test author.name query
+        assert!(!author_name_query.matches(&author_path, &value)); // "author" should not match
+        assert!(author_name_query.matches(&author_name_path, &value)); // "author.name" should match
+        assert!(!author_name_query.matches(&author_email_path, &value)); // "author.email" should not match
+
+        // Test author.email query
+        assert!(!author_email_query.matches(&author_path, &value)); // "author" should not match
+        assert!(!author_email_query.matches(&author_name_path, &value)); // "author.name" should not match
+        assert!(author_email_query.matches(&author_email_path, &value)); // "author.email" should match
     }
 }
