@@ -34,10 +34,6 @@ pub enum MatterOfError {
     #[error("Invalid front matter in {path}: {reason}")]
     InvalidFrontMatter { path: PathBuf, reason: String },
 
-    /// Key path parsing errors
-    #[error("Invalid key path: {path} ({reason})")]
-    InvalidKeyPath { path: String, reason: String },
-
     /// Query errors
     #[error("Invalid query: {reason}")]
     InvalidQuery { reason: String },
@@ -96,14 +92,6 @@ impl MatterOfError {
     /// Create a new invalid front matter error
     pub fn invalid_front_matter(path: impl Into<PathBuf>, reason: impl Into<String>) -> Self {
         Self::InvalidFrontMatter {
-            path: path.into(),
-            reason: reason.into(),
-        }
-    }
-
-    /// Create a new invalid key path error
-    pub fn invalid_key_path(path: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::InvalidKeyPath {
             path: path.into(),
             reason: reason.into(),
         }
@@ -189,7 +177,6 @@ impl MatterOfError {
             | Self::NotSupported { .. } => false,
             Self::InvalidFileFormat { .. }
             | Self::InvalidFrontMatter { .. }
-            | Self::InvalidKeyPath { .. }
             | Self::InvalidQuery { .. }
             | Self::InvalidPath { .. }
             | Self::TypeConversion { .. }
@@ -207,10 +194,9 @@ impl MatterOfError {
         match self {
             Self::FileNotFound { .. } | Self::PermissionDenied { .. } => ErrorSeverity::Critical,
             Self::InvalidFrontMatter { .. } | Self::Yaml(_) => ErrorSeverity::High,
-            Self::InvalidKeyPath { .. }
-            | Self::InvalidQuery { .. }
-            | Self::InvalidPath { .. }
-            | Self::TypeConversion { .. } => ErrorSeverity::Medium,
+            Self::InvalidQuery { .. } | Self::InvalidPath { .. } | Self::TypeConversion { .. } => {
+                ErrorSeverity::Medium
+            }
             Self::Validation { .. } | Self::PathResolution { .. } => ErrorSeverity::Low,
             Self::Multiple { errors } => errors
                 .iter()
@@ -260,10 +246,7 @@ impl Clone for MatterOfError {
                 path: path.clone(),
                 reason: reason.clone(),
             },
-            Self::InvalidKeyPath { path, reason } => Self::InvalidKeyPath {
-                path: path.clone(),
-                reason: reason.clone(),
-            },
+
             Self::InvalidQuery { reason } => Self::InvalidQuery {
                 reason: reason.clone(),
             },
