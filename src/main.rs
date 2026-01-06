@@ -109,7 +109,12 @@ fn handle_error(error: MatterOfError) {
         } => {
             error!("Invalid front matter in {}: {}", path.display(), reason);
         }
-
+        MatterOfError::InvalidKeyPath {
+            ref path,
+            ref reason,
+        } => {
+            error!("Invalid key path '{}': {}", path, reason);
+        }
         MatterOfError::InvalidQuery { ref reason } => {
             error!("Invalid query: {}", reason);
         }
@@ -150,7 +155,11 @@ fn handle_error(error: MatterOfError) {
         MatterOfError::FileNotFound { .. } => {
             info!("Tip: Make sure the file path is correct and the file exists");
         }
-
+        MatterOfError::InvalidKeyPath { .. } => {
+            info!(
+                "Tip: Use quotes for keys with special characters, e.g., --key='\"key.with.dots\"'"
+            );
+        }
         MatterOfError::InvalidQuery { .. } => {
             info!("Tip: Check your regular expressions and query syntax");
         }

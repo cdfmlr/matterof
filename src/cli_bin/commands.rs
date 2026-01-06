@@ -6,8 +6,8 @@
 use crate::cli_bin::args::*;
 use log::{debug, info, warn};
 use matterof::core::{
-    Document, FrontMatterValue, JsonMutator, JsonPathQuery, JsonPathQueryResult,
-    NormalizedPathUtils, ParsedPath, PathSegment, YamlJsonConverter,
+    Document, FrontMatterValue, JsonMutator, JsonPathQuery, JsonPathQueryResult, KeyPath,
+    NormalizedPathUtils, ParsedPath, PathSegment, Query, YamlJsonConverter,
 };
 use matterof::error::{MatterOfError, Result};
 use matterof::io::{
@@ -461,28 +461,9 @@ pub fn init_command(args: InitArgs) -> Result<()> {
             document.ensure_front_matter();
 
             // Add default values
-            for (jsonpath_key, value) in &defaults {
-                let jsonpath_query = JsonPathQuery::new(jsonpath_key)?;
-
-                // Check if the path already exists
-                let front_matter = document.front_matter().unwrap();
-                let yaml_value = YamlJsonConverter::document_front_matter_to_yaml(front_matter);
-                let json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
-                let located_results = jsonpath_query.query_located(&json_value);
-
-                if located_results.is_empty() {
-                    // Path doesn't exist, set the default value
-                    let mut json_copy = json_value;
-                    let json_value_to_set = YamlJsonConverter::front_matter_to_json(value)?;
-
-                    if let Ok(_) =
-                        JsonMutator::set_at_path(&mut json_copy, jsonpath_key, json_value_to_set)
-                    {
-                        let yaml_result = YamlJsonConverter::json_to_yaml(&json_copy)?;
-                        let front_matter_map =
-                            YamlJsonConverter::yaml_to_document_front_matter(&yaml_result)?;
-                        document.set_front_matter(Some(front_matter_map));
-                    }
+            for (key_path, value) in &defaults {
+                if document.get(key_path).is_none() {
+                    document.set(key_path, value.clone())?;
                 }
             }
 
@@ -522,46 +503,15 @@ pub fn clean_command(args: CleanArgs) -> Result<()> {
 
         if document.has_front_matter() {
             if args.remove_null {
-                // Remove null values using JSONPath
-                let jsonpath_query = JsonPathQuery::new("$..*")?;
+                // Remove null values
+                let query = Query::new()
+                    .and_custom(|_key, value| value.is_null())
+                    .combine_with(matterof::core::CombineMode::Any);
 
-                if let Some(front_matter) = document.front_matter() {
-                    let yaml_value = YamlJsonConverter::document_front_matter_to_yaml(front_matter);
-                    let json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
-                    let located_results = jsonpath_query.query_located(&json_value);
-
-                    // Collect null value paths (process in reverse order for safe removal)
-                    let mut null_paths: Vec<_> = located_results
-                        .into_iter()
-                        .filter(|(_, value)| value.is_null())
-                        .map(|(path, _)| path)
-                        .collect();
-
-                    // Sort paths by depth (deepest first) to avoid invalidating parent removals
-                    null_paths.sort_by(|a, b| {
-                        b.to_string()
-                            .matches('.')
-                            .count()
-                            .cmp(&a.to_string().matches('.').count())
-                    });
-
-                    if !null_paths.is_empty() {
-                        let mut json_copy = json_value.clone();
-
-                        for path in null_paths {
-                            let path_str = path.to_string();
-                            if let Ok(_) = JsonMutator::remove_at_path(&mut json_copy, &path_str) {
-                                modified = true;
-                            }
-                        }
-
-                        if modified {
-                            let yaml_result = YamlJsonConverter::json_to_yaml(&json_copy)?;
-                            let front_matter_map =
-                                YamlJsonConverter::yaml_to_document_front_matter(&yaml_result)?;
-                            document.set_front_matter(Some(front_matter_map));
-                        }
-                    }
+                let null_matches = document.query(&query);
+                for (key_path, _) in null_matches.matches() {
+                    document.remove(key_path)?;
+                    modified = true;
                 }
             }
 
@@ -672,43 +622,15 @@ pub fn format_command(args: FormatArgs) -> Result<()> {
 
         if document.has_front_matter() {
             if args.remove_null {
-                // Remove null values using JSONPath
-                let jsonpath_query = JsonPathQuery::new("$..*")?;
+                // Remove null values
+                let query = Query::new()
+                    .and_custom(|_key, value| value.is_null())
+                    .combine_with(matterof::core::CombineMode::Any);
 
-                if let Some(front_matter) = document.front_matter() {
-                    let yaml_value = YamlJsonConverter::document_front_matter_to_yaml(front_matter);
-                    let json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
-                    let located_results = jsonpath_query.query_located(&json_value);
-
-                    // Collect null value paths (process in reverse order for safe removal)
-                    let mut null_paths: Vec<_> = located_results
-                        .into_iter()
-                        .filter(|(_, value)| value.is_null())
-                        .map(|(path, _)| path)
-                        .collect();
-
-                    // Sort paths by depth (deepest first) to avoid invalidating parent removals
-                    null_paths.sort_by(|a, b| {
-                        b.to_string()
-                            .matches('.')
-                            .count()
-                            .cmp(&a.to_string().matches('.').count())
-                    });
-
-                    if !null_paths.is_empty() {
-                        let mut json_copy = json_value.clone();
-
-                        for path in null_paths {
-                            let path_str = path.to_string();
-                            let _ = JsonMutator::remove_at_path(&mut json_copy, &path_str);
-                        }
-
-                        let yaml_result = YamlJsonConverter::json_to_yaml(&json_copy)?;
-                        let front_matter_map =
-                            YamlJsonConverter::yaml_to_document_front_matter(&yaml_result)?;
-                        document.set_front_matter(Some(front_matter_map));
-                        // modified is set to true for formatting operations
-                    }
+                let null_matches = document.query(&query);
+                for (key_path, _) in null_matches.matches() {
+                    document.remove(key_path)?;
+                    // modified is set to true for formatting operations
                 }
             }
 
@@ -1380,7 +1302,7 @@ fn parse_cli_value(
     FrontMatterValue::parse_from_string(value, value_type)
 }
 
-fn parse_default_values(defaults: &[String]) -> Result<Vec<(String, FrontMatterValue)>> {
+fn parse_default_values(defaults: &[String]) -> Result<Vec<(KeyPath, FrontMatterValue)>> {
     let mut result = Vec::new();
 
     for default in defaults {
@@ -1392,13 +1314,9 @@ fn parse_default_values(defaults: &[String]) -> Result<Vec<(String, FrontMatterV
             )));
         }
 
-        let jsonpath_key = if parts[0].starts_with('$') {
-            parts[0].to_string()
-        } else {
-            format!("$.{}", parts[0])
-        };
+        let key_path = KeyPath::parse(parts[0])?;
         let value = FrontMatterValue::parse_from_string(parts[1], None)?;
-        result.push((jsonpath_key, value));
+        result.push((key_path, value));
     }
 
     Ok(result)
