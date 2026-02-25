@@ -37,23 +37,22 @@
 //! ## Querying Front Matter
 //!
 //! ```rust,no_run
-//! use matterof::{Document, FrontMatterReader, JsonPathQuery, Result};
+//! use matterof::{Document, FrontMatterReader, Query, ValueTypeCondition, Result};
 //!
 //! fn main() -> Result<()> {
 //!     let reader = FrontMatterReader::new();
 //!     let document = reader.read_file("example.md")?;
 //!
-//!     // Use JSONPath to query front matter (auto-prepends "$." if needed)
-//!     if let Some(fm) = document.front_matter() {
-//!         use matterof::YamlJsonConverter;
-//!         let yaml = YamlJsonConverter::document_front_matter_to_yaml(fm);
-//!         let json = YamlJsonConverter::yaml_to_json(&yaml)?;
-//!         let q = JsonPathQuery::new("tags[*]")?;
-//!         let results = q.query(&json);
-//!         for tag in results {
-//!             println!("tag: {}", tag);
-//!         }
+//!     // Find all string values
+//!     let string_query = Query::new().and_type(ValueTypeCondition::String);
+//!     for (path, value) in document.query(&string_query).matches() {
+//!         println!("{}: {}", path, value);
 //!     }
+//!
+//!     // Find values matching a key pattern (regex)
+//!     let tag_query = Query::key_regex("^tags")?;
+//!     let tag_results = document.query(&tag_query);
+//!     println!("tags: {:?}", tag_results.len());
 //!     Ok(())
 //! }
 //! ```

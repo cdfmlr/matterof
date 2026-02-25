@@ -28,7 +28,7 @@ let writer = FrontMatterWriter::new();
 writer.write_file(&doc, "example.md", None)?;
 ```
 
-For JSONPath-based queries, use the `JsonPathQuery` and `YamlJsonConverter` types from the `core` module directly. The CLI tool exposes the full JSONPath interface.
+For JSONPath-based queries, use `matterof::JsonPathQuery` and `matterof::YamlJsonConverter`. The CLI tool exposes the full JSONPath interface.
 
 ## CLI Usage
 
