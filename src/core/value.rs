@@ -229,8 +229,8 @@ pub enum ValueType {
 }
 
 impl ValueType {
-    /// Parse from a string
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse a `ValueType` from its string name (e.g. `"string"`, `"int"`, `"bool"`)
+    pub fn from_name(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "string" | "str" => Some(Self::String),
             "int" | "integer" | "i64" => Some(Self::Int),

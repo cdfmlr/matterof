@@ -2,39 +2,39 @@
 
 > forked from [cdfmlr/smelt](https://github.com/cdfmlr/smelt). (they are different programs for different purpose: forked for reusing some initial code only)
 
-matterof is a commandline tool for reading and editing YAML front-matter in Markdown files using JSONPath queries.
+matterof is a Rust library and commandline tool for reading and editing YAML front-matter in Markdown files using JSONPath queries.
 
 ## Core Library API
 
-The core library provides a clean, JSONPath-based API for working with front-matter:
+The core library provides a type-safe API for working with front-matter:
 
 ```rust
-use matterof::{Document, FrontMatterValue};
+use matterof::{FrontMatterReader, FrontMatterWriter, FrontMatterValue, KeyPath};
 
 // Load a document
-let doc = Document::from_file("example.md")?;
+let reader = FrontMatterReader::new();
+let mut doc = reader.read_file("example.md")?;
 
-// Query using JSONPath (auto-prepends "$." if needed)
-let title = doc.query("title")?;                    // Simple field
-let author_name = doc.query("author.name")?;        // Nested object
-let first_tag = doc.query("tags[0]")?;              // Array access
-let all_tags = doc.query("tags[*]")?;               // Wildcard
-let published_posts = doc.query("posts[?@.published]")?;  // Filter
+// Read a value by key path
+let title = doc.get(&KeyPath::parse("title")?);
+let author_name = doc.get(&KeyPath::parse("author.name")?);
 
-// Modify using JSONPath
-doc.set("title", FrontMatterValue::string("New Title"))?;
-doc.set("tags[0]", FrontMatterValue::string("rust"))?;
-doc.set("posts[?@.draft].published", FrontMatterValue::bool(true))?;
+// Modify values
+doc.set(&KeyPath::parse("title")?, FrontMatterValue::string("New Title"))?;
+doc.add_to_array(&KeyPath::parse("tags")?, FrontMatterValue::string("rust"), None)?;
 
 // Save changes
-doc.write_to_file("example.md")?;
+let writer = FrontMatterWriter::new();
+writer.write_file(&doc, "example.md", None)?;
 ```
+
+For JSONPath-based queries, use the `JsonPathQuery` and `YamlJsonConverter` types from the `core` module directly. The CLI tool exposes the full JSONPath interface.
 
 ## CLI Usage
 
 All commands use [JSONPath](https://tools.ietf.org/rfc/rfc9535.txt) syntax for powerful querying and modification. Simple paths are automatically prefixed with `$.` for convenience.
 
-### Query
+### Get
 
 ```bash
 # Get all front-matter
@@ -45,7 +45,7 @@ matterof get --query "title" file.md
 matterof get --key "title" file.md              # alias for --query
 matterof get --jsonpath "title" file.md         # explicit JSONPath syntax
 
-# Nested object access  
+# Nested object access
 matterof get --query "author.name" file.md
 
 # Array access
@@ -81,7 +81,6 @@ matterof set --query "author.name" --value "John Doe" file.md
 
 # Array operations
 matterof set --query "tags[0]" --value "rust" file.md
-matterof set --query "tags[-1]" --value "new-tag" file.md    # append to end
 
 # Bulk operations (sets ALL matches)
 matterof set --query "posts[*].published" --value true file.md
@@ -105,26 +104,26 @@ matterof add --query "tags" --value "new-tag" file.md
 # Insert at specific position
 matterof add --query "tags" --value "first-tag" --index 0 file.md
 
-# Add to objects
-matterof add --query "author" --key "email" --value "john@example.com" file.md
+# Add a new key to an object
+matterof add --query "author" --add-key "email" --value "john@example.com" file.md
 ```
 
 ### Remove
 
 ```bash
 # Remove fields
-matterof rm --query "draft" file.md
-matterof rm --query "author.email" file.md
+matterof remove --query "draft" file.md
+matterof remove --query "author.email" file.md
 
 # Remove array elements
-matterof rm --query "tags[0]" file.md           # remove first tag
-matterof rm --query "tags[?@ == 'draft']" file.md    # remove "draft" tags
+matterof remove --query "tags[0]" file.md           # remove first tag
+matterof remove --query "tags[?@ == 'draft']" file.md    # remove "draft" tags
 
 # Bulk removal
-matterof rm --query "posts[?@.archived]" file.md     # remove archived posts
+matterof remove --query "posts[?@.archived]" file.md     # remove archived posts
 
 # Remove entire front-matter
-matterof rm --all file.md
+matterof remove --all file.md
 ```
 
 ### Replace
@@ -138,7 +137,7 @@ matterof replace --query "author.old_field" --new-key "new_field" file.md
 matterof replace --query "status" --old-value "draft" --new-value "published" file.md
 
 # Bulk replace with filtering
-matterof replace --query "posts[?@.status == 'draft'].status" --value "review" file.md
+matterof replace --query "posts[?@.status == 'draft'].status" --new-value "review" file.md
 ```
 
 ### Query Analysis
@@ -198,7 +197,7 @@ matterof clean file.md
 matterof validate file.md
 
 # Format/prettify front-matter
-matterof fmt file.md
+matterof format file.md
 
 # Help
 matterof help
@@ -227,7 +226,7 @@ For complete JSONPath syntax, see [RFC 9535](https://tools.ietf.org/rfc/rfc9535.
 
 ```bash
 # From source
-cargo install --git https://github.com/your-repo/matterof
+cargo install --git https://github.com/cdfmlr/matterof
 
 # From crates.io (coming soon)
 cargo install matterof
@@ -253,9 +252,6 @@ matterof get --query "posts[*].title" --format json blog/*.md
 ```bash
 # Find expensive programming books
 matterof get --query "books[?@.category == 'programming' && @.price > 50]" catalog.md
-
-# Update all book prices by 10%
-matterof replace --query "books[*].price" --transform "@ * 1.1" catalog.md
 
 # Add ISBN to books that don't have one
 matterof set --query "books[?!@.isbn].isbn" --value "TBD" catalog.md

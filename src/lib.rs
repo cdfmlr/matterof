@@ -1,34 +1,35 @@
-//! matterof: A production-ready library for manipulating YAML front matter in markdown files
+//! matterof: A library and CLI tool for manipulating YAML front matter in markdown files
 //!
 //! This library provides a clean, efficient, and type-safe API for reading, querying,
-//! modifying, and writing YAML front matter in markdown documents. It's designed to be
-//! both a standalone library and the foundation for CLI tools.
+//! modifying, and writing YAML front matter in markdown documents. It is designed to be
+//! both a standalone library and the foundation for the `matterof` CLI tool.
 //!
 //! # Features
 //!
 //! - **Type-safe front matter handling** with proper error types
-//! - **Flexible query system** for filtering and selecting data
+//! - **JSONPath query support** for powerful filtering and selection
 //! - **Atomic file operations** with backup support
 //! - **Batch processing** with file resolution and filtering
 //! - **Clean separation** between library and CLI concerns
 //! - **Comprehensive error handling** with detailed error information
-//! - **Performance optimized** with lazy loading and efficient algorithms
 //!
 //! # Quick Start
 //!
 //! ## Reading and Parsing
 //!
 //! ```rust,no_run
-//! use matterof::{Document, FrontMatterReader, KeyPath, Query, Result};
+//! use matterof::{FrontMatterReader, KeyPath, Result};
 //!
 //! fn main() -> Result<()> {
 //!     // Read a document from file
 //!     let reader = FrontMatterReader::new();
 //!     let document = reader.read_file("example.md")?;
 //!
-//!     // Access front matter values
+//!     // Access front matter values by key path
 //!     let title = document.get(&KeyPath::parse("title")?);
 //!     let author_name = document.get(&KeyPath::parse("author.name")?);
+//!     println!("Title: {:?}", title);
+//!     println!("Author: {:?}", author_name);
 //!     Ok(())
 //! }
 //! ```
@@ -36,18 +37,23 @@
 //! ## Querying Front Matter
 //!
 //! ```rust,no_run
-//! use matterof::{Document, Query, ValueTypeCondition, Result};
+//! use matterof::{Document, FrontMatterReader, JsonPathQuery, Result};
 //!
 //! fn main() -> Result<()> {
-//!     let document = Document::empty();
+//!     let reader = FrontMatterReader::new();
+//!     let document = reader.read_file("example.md")?;
 //!
-//!     // Create queries for filtering
-//!     let string_query = Query::new().and_type(ValueTypeCondition::String);
-//!     let results = document.query(&string_query);
-//!
-//!     // Use regular expressions
-//!     let tag_query = Query::key_regex("^tag")?;
-//!     let tag_results = document.query(&tag_query);
+//!     // Use JSONPath to query front matter (auto-prepends "$." if needed)
+//!     if let Some(fm) = document.front_matter() {
+//!         use matterof::YamlJsonConverter;
+//!         let yaml = YamlJsonConverter::document_front_matter_to_yaml(fm);
+//!         let json = YamlJsonConverter::yaml_to_json(&yaml)?;
+//!         let q = JsonPathQuery::new("tags[*]")?;
+//!         let results = q.query(&json);
+//!         for tag in results {
+//!             println!("tag: {}", tag);
+//!         }
+//!     }
 //!     Ok(())
 //! }
 //! ```
@@ -122,9 +128,9 @@
 //!
 //! # Architecture
 //!
-//! The library is organized into several modules:
+//! The library is organised into several modules:
 //!
-//! - [`core`]: Core types and domain logic (Document, Query, KeyPath, etc.)
+//! - [`core`]: Core types and domain logic (Document, KeyPath, Query, JSONPath support, etc.)
 //! - [`io`]: File I/O operations (reading, writing, file resolution)
 //! - [`error`]: Comprehensive error handling with detailed error types
 //!
@@ -132,7 +138,6 @@
 //!
 //! - **Separation of concerns**: Clear boundaries between parsing, querying, and I/O
 //! - **Composability**: Small, focused types that can be combined
-//! - **Performance**: Lazy evaluation and efficient algorithms
 //! - **Safety**: Comprehensive error handling and type safety
 //! - **Usability**: Builder patterns and convenience functions for common operations
 
@@ -158,16 +163,14 @@ pub mod io;
 
 // CLI components are available only in the binary, not as part of the library API
 
-/// Convenience functions for common operations
+/// Convenience functions for common single-step operations.
+///
+/// These functions use sensible defaults and are perfect for simple scripts
+/// or when you don't need fine-grained control over the operations.
 pub mod convenience {
-    //! Convenience functions that provide simple APIs for common use cases
-    //!
-    //! These functions use sensible defaults and are perfect for simple scripts
-    //! or when you don't need fine-grained control over the operations.
-
     pub use crate::io::convenience::*;
 
-    use crate::{Document, FrontMatterValue, KeyPath, Result};
+    use crate::{Document, FrontMatterValue, KeyPath, MatterOfError, Result};
 
     /// Parse front matter from a string
     pub fn parse_document(content: &str) -> Result<Document> {
@@ -203,8 +206,11 @@ pub mod convenience {
         key: &str,
         value: FrontMatterValue,
     ) -> Result<()> {
-        let mut document = crate::io::convenience::read_document(path.as_ref())
-            .unwrap_or_else(|_| Document::empty());
+        let mut document = match crate::io::convenience::read_document(path.as_ref()) {
+            Ok(doc) => doc,
+            Err(MatterOfError::FileNotFound { .. }) => Document::empty(),
+            Err(e) => return Err(e),
+        };
         let key_path = KeyPath::parse(key)?;
         document.set(&key_path, value)?;
         crate::io::convenience::write_document(&document, path)?;

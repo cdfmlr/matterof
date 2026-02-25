@@ -509,8 +509,9 @@ pub fn clean_command(args: CleanArgs) -> Result<()> {
                     .combine_with(matterof::core::CombineMode::Any);
 
                 let null_matches = document.query(&query);
-                for (key_path, _) in null_matches.matches() {
-                    document.remove(key_path)?;
+                let keys_to_remove: Vec<_> = null_matches.matches().keys().cloned().collect();
+                for key_path in keys_to_remove {
+                    document.remove(&key_path)?;
                     modified = true;
                 }
             }
@@ -628,9 +629,9 @@ pub fn format_command(args: FormatArgs) -> Result<()> {
                     .combine_with(matterof::core::CombineMode::Any);
 
                 let null_matches = document.query(&query);
-                for (key_path, _) in null_matches.matches() {
-                    document.remove(key_path)?;
-                    // modified is set to true for formatting operations
+                let keys_to_remove: Vec<_> = null_matches.matches().keys().cloned().collect();
+                for key_path in keys_to_remove {
+                    document.remove(&key_path)?;
                 }
             }
 
@@ -816,7 +817,7 @@ fn remove_jsonpath_value(
         .into_iter()
         .map(|(path, _)| path.to_string())
         .collect();
-    path_strings.sort_by(|a, b| b.len().cmp(&a.len()));
+    path_strings.sort_by_key(|a| std::cmp::Reverse(a.len()));
 
     // Now work with a fresh mutable copy of the JSON
     let mut json_value = YamlJsonConverter::yaml_to_json(&yaml_value)?;
@@ -1056,7 +1057,7 @@ fn add_jsonpath_value(
                         return Err(MatterOfError::InvalidQuery {
                             reason: format!(
                                 "Cannot add array element to non-array at path: {}",
-                                path.to_string()
+                                path
                             ),
                         });
                     }

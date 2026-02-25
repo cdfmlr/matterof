@@ -178,12 +178,12 @@ impl MatterOfError {
     /// Check if this error is recoverable
     pub fn is_recoverable(&self) -> bool {
         match self {
-            Self::Io(io_err) => match io_err.kind() {
+            Self::Io(io_err) => !matches!(
+                io_err.kind(),
                 std::io::ErrorKind::NotFound
-                | std::io::ErrorKind::PermissionDenied
-                | std::io::ErrorKind::AlreadyExists => false,
-                _ => true,
-            },
+                    | std::io::ErrorKind::PermissionDenied
+                    | std::io::ErrorKind::AlreadyExists
+            ),
             Self::FileNotFound { .. }
             | Self::PermissionDenied { .. }
             | Self::NotSupported { .. } => false,

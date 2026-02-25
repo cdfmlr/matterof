@@ -55,7 +55,7 @@ pub enum Commands {
 }
 
 /// Common options for file operations
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct CommonFileOptions {
     /// Files or directories to process
     pub files: Vec<PathBuf>,
@@ -82,7 +82,7 @@ pub struct CommonFileOptions {
 }
 
 /// Common options for write operations
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct WriteOptions {
     /// Preview changes without modifying files (show diff)
     #[arg(long)]
@@ -414,32 +414,6 @@ pub enum ValidationFormat {
     Simple,
 }
 
-impl Default for WriteOptions {
-    fn default() -> Self {
-        Self {
-            dry_run: false,
-            backup_suffix: None,
-            backup_dir: None,
-            stdout: false,
-            output_dir: None,
-            no_atomic: false,
-            line_endings: None,
-        }
-    }
-}
-
-impl Default for CommonFileOptions {
-    fn default() -> Self {
-        Self {
-            files: Vec::new(),
-            follow_links: false,
-            max_depth: None,
-            include_hidden: false,
-            extensions: Vec::new(),
-            exclude_patterns: Vec::new(),
-        }
-    }
-}
 
 impl From<LineEndingStyle> for matterof::io::LineEndings {
     fn from(style: LineEndingStyle) -> Self {
