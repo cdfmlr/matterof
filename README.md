@@ -1,6 +1,7 @@
 # matterof: markdown front-matter editor
 
-> forked from [cdfmlr/smelt](https://github.com/cdfmlr/smelt). (they are different programs for different purpose: forked for reusing some initial code only)
+> ✨ **vibeware notice** ✨
+> This project is *vibe coded* and *vibe maintained* — built on pure vibes, powered by LLM agents, and delivered as-is straight from the machine. No human warranty included, no human warranty implied. Use it on vibes, enjoy it on vibes, debug it on vibes. If it works, great! If it doesn't... also great, probably? 🤷
 
 matterof is a Rust library and commandline tool for reading and editing YAML front-matter in Markdown files using JSONPath queries.
 
