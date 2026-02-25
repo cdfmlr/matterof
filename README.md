@@ -226,11 +226,11 @@ For complete JSONPath syntax, see [RFC 9535](https://tools.ietf.org/rfc/rfc9535.
 ## Installation
 
 ```bash
+# From crates.io
+cargo install matterof
+
 # From source
 cargo install --git https://github.com/cdfmlr/matterof
-
-# From crates.io (coming soon)
-cargo install matterof
 ```
 
 ## Examples
