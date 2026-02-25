@@ -1,10 +1,10 @@
 [package]
 name = "matterof"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["matterof contributors"]
 license = "MIT OR Apache-2.0"
-description = "A production-ready library and CLI tool for manipulating YAML front matter in markdown files"
+description = "A library and CLI tool for manipulating YAML front matter in markdown files"
 homepage = "https://github.com/cdfmlr/matterof"
 repository = "https://github.com/cdfmlr/matterof"
 readme = "README.md"
