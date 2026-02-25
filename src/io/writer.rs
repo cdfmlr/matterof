@@ -57,7 +57,7 @@ pub struct FrontMatterWriter {
 }
 
 /// Write operation options for individual operations
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct WriteOptions {
     /// Override backup settings for this operation
     pub backup: Option<BackupOptions>,
@@ -104,15 +104,6 @@ pub struct WriteResult {
     pub diff: Option<String>,
 }
 
-impl Default for WriteOptions {
-    fn default() -> Self {
-        Self {
-            backup: None,
-            output: None,
-            dry_run: false,
-        }
-    }
-}
 
 impl FrontMatterWriter {
     /// Create a new writer with default configuration
@@ -440,10 +431,10 @@ impl FrontMatterWriter {
         temp_file.flush().map_err(MatterOfError::Io)?;
 
         temp_file.persist(path).map_err(|e| {
-            MatterOfError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to persist temporary file: {}", e),
-            ))
+            MatterOfError::Io(std::io::Error::other(format!(
+                "Failed to persist temporary file: {}",
+                e
+            )))
         })?;
 
         Ok(())

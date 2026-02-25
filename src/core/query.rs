@@ -8,6 +8,9 @@ use crate::error::Result;
 use regex::Regex;
 use std::collections::BTreeMap;
 
+/// Function type used in `QueryCondition::Custom`
+type QueryPredicate = dyn Fn(&KeyPath, &FrontMatterValue) -> bool + Send + Sync;
+
 /// A query builder for selecting front matter data
 pub struct Query {
     conditions: Vec<QueryCondition>,
@@ -46,7 +49,7 @@ pub enum QueryCondition {
     /// Match values by type
     ValueType(ValueTypeCondition),
     /// Custom predicate function
-    Custom(Box<dyn Fn(&KeyPath, &FrontMatterValue) -> bool + Send + Sync>),
+    Custom(Box<QueryPredicate>),
 }
 
 impl std::fmt::Debug for QueryCondition {

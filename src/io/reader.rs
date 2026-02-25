@@ -70,7 +70,7 @@ impl FrontMatterReader {
 
         // Check file size if limit is set
         if let Some(max_size) = self.config.max_file_size {
-            let metadata = fs::metadata(path).map_err(|e| MatterOfError::Io(e))?;
+            let metadata = fs::metadata(path).map_err(MatterOfError::Io)?;
 
             if metadata.len() as usize > max_size {
                 return Err(MatterOfError::validation(format!(

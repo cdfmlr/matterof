@@ -18,6 +18,8 @@ pub struct Document {
     front_matter: Option<BTreeMap<String, FrontMatterValue>>,
     body: String,
     original_content: Option<String>,
+    /// Tracks whether this document has been mutated since creation
+    mutated: bool,
 }
 
 impl Document {
@@ -27,6 +29,7 @@ impl Document {
             front_matter,
             body,
             original_content: None,
+            mutated: false,
         }
     }
 
@@ -93,11 +96,9 @@ impl Document {
             .unwrap_or(false)
     }
 
-    /// Check if the document has been modified
+    /// Check if the document has been modified since it was loaded
     pub fn is_modified(&self) -> bool {
-        // This is a simple check - in a real implementation you might want
-        // more sophisticated change tracking
-        self.original_content.is_some()
+        self.mutated
     }
 
     /// Initialize front matter if it doesn't exist
@@ -128,6 +129,7 @@ impl Document {
         let segments = key_path.segments().to_vec();
         let fm = self.front_matter.as_mut().unwrap();
         Self::set_nested_value_static(fm, &segments, value)?;
+        self.mutated = true;
         Ok(())
     }
 
@@ -141,6 +143,9 @@ impl Document {
 
         let removed = Self::remove_nested_value_static(fm, &segments)?;
         self.clean_empty_front_matter();
+        if removed.is_some() {
+            self.mutated = true;
+        }
         Ok(removed)
     }
 
@@ -216,6 +221,7 @@ impl Document {
     /// Update the body content
     pub fn set_body(&mut self, body: String) {
         self.body = body;
+        self.mutated = true;
     }
 
     /// Merge another document's front matter into this one
@@ -231,6 +237,7 @@ impl Document {
                     fm.insert(key.clone(), value.clone());
                 }
             }
+            self.mutated = true;
         }
         Ok(())
     }
@@ -338,17 +345,10 @@ impl Document {
         if path.len() >= 2 {
             if let Ok(index) = path[1].parse::<usize>() {
                 // We're dealing with array indexing
-                let mut array = if let Some(existing_value) = container.get(key) {
-                    if let Some(existing_array) = existing_value.as_array() {
-                        existing_array
-                    } else {
-                        // Current value is not an array, create a new one
-                        Vec::new()
-                    }
-                } else {
-                    // No existing value, create new array
-                    Vec::new()
-                };
+                let mut array = container
+                    .get(key)
+                    .and_then(|v| v.as_array())
+                    .unwrap_or_default();
 
                 // Extend array if necessary
                 while array.len() <= index {
@@ -448,9 +448,7 @@ impl Document {
             } else if let Some(array) = value.as_array() {
                 // Handle array elements with numeric indices
                 for (index, array_value) in array.iter().enumerate() {
-                    let array_key_path = key_path.child(&index.to_string());
-
-                    // Test this array element
+                    let array_key_path = key_path.child(index.to_string());
                     if query.matches(&array_key_path, array_value) {
                         result.add_match(array_key_path.clone(), array_value.clone());
                     }
@@ -479,7 +477,7 @@ impl Document {
             } else if let Some(array) = value.as_array() {
                 // Flatten array elements with numeric indices
                 for (index, array_value) in array.iter().enumerate() {
-                    let array_key_path = key_path.child(&index.to_string());
+                    let array_key_path = key_path.child(index.to_string());
                     result.insert(array_key_path.clone(), array_value.clone());
 
                     // Recursively flatten nested objects within arrays
