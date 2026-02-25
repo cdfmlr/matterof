@@ -1,6 +1,10 @@
 /target
 .idea
 
+# example/ build artefacts
+example/tmp/
+example/matterof
+
 ### https://github.com/github/gitignore/blob/main/Global/macOS.gitignore
 # General
 .DS_Store
